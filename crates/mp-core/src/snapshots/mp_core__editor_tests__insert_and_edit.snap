@@ -1,0 +1,67 @@
+---
+source: crates/mp-core/src/editor_tests.rs
+expression: e.song
+---
+Song(
+  ppq: 960,
+  tempo_map: [
+    TempoPoint(
+      tick: 0,
+      bpm: 120.0,
+    ),
+  ],
+  meter_map: [
+    MeterPoint(
+      tick: 0,
+      numerator: 4,
+      denominator: 4,
+    ),
+  ],
+  tracks: [
+    Track(
+      name: "Track 1",
+      instrument: SoundFont(
+        path: "",
+        bank: 0,
+        preset: 0,
+      ),
+      volume: 1.0,
+      pan: 0.0,
+      mute: false,
+      solo: false,
+      channel: 0,
+      notes: [
+        Note(
+          id: 1,
+          start: 0,
+          duration: 480,
+          pitch: 60,
+          velocity: 120,
+        ),
+        Note(
+          id: 2,
+          start: 240,
+          duration: 720,
+          pitch: 64,
+          velocity: 120,
+        ),
+        Note(
+          id: 3,
+          start: 720,
+          duration: 480,
+          pitch: 76,
+          velocity: 120,
+        ),
+      ],
+      lanes: Lanes(
+        sustain: [],
+        pitch_bend: [],
+        mod_wheel: [],
+        volume: [],
+        pan: [],
+      ),
+    ),
+  ],
+  next_note_id: 4,
+  master_reverb: 0.25,
+)

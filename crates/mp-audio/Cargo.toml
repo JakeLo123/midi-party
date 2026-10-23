@@ -1,0 +1,15 @@
+[package]
+name = "mp-audio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mp-core.workspace = true
+rustysynth.workspace = true
+cpal.workspace = true
+hound.workspace = true
+mp3lame-encoder.workspace = true
+arc-swap.workspace = true
+rtrb.workspace = true
+thiserror.workspace = true

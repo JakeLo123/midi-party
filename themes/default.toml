@@ -1,0 +1,28 @@
+# midi-party default theme: dark, flat, terminal-ish.
+# Copy to ~/.config/midi-party/theme.toml and override any entry.
+# Colors are "#rrggbb" or "#rrggbbaa".
+
+font_size = 14.0
+
+[colors]
+background     = "#1b1b1b"   # rows of the white keys
+black_key_row  = "#111111"   # rows of the sharps/flats, darker like the keys
+white_key      = "#d6d6d6"   # the keyboard on the left
+black_key      = "#161616"
+key_label      = "#303030"
+grid           = "#262626"   # grid step lines
+beat_line      = "#333333"
+bar_line       = "#4a4a4a"
+octave_line    = "#3a3a3a"
+note           = "#5aa0d8"
+note_selected  = "#f5c542"
+note_ghost     = "#3a4a5a"
+cursor         = "#ffffff"
+cursor_fill    = "#ffffff30"
+playhead       = "#e05a5a"
+status_bg      = "#0c0c0c"
+status_fg      = "#d0d0d0"
+status_mode    = "#8ad88a"
+status_dim     = "#707070"
+accent         = "#8ad88a"
+error          = "#e05a5a"

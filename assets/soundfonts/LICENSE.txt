@@ -1,0 +1,26 @@
+florestan-subset.sf2
+====================
+
+Origin URL : https://raw.githubusercontent.com/schellingb/TinySoundFont/main/examples/florestan-subset.sf2
+             (file "examples/florestan-subset.sf2" in the TinySoundFont repository,
+              https://github.com/schellingb/TinySoundFont, where it ships as the
+              example SoundFont; the library itself is MIT-licensed)
+Author     : Nando Florestan (http://nandoflorestan.cjb.net, http://go.to/florestan)
+             — subset of the "Florestan" SoundFont instrument collection
+License    : Public Domain
+
+The SoundFont's own INFO chunk declares:
+    ICOP = "Public Domain"
+    ICMT = "http://go.to/florestan  http://nandoflorestan.cjb.net"
+The author's Florestan banks are also listed as "Public domain" on the
+Polyphone SoundFont library (https://www.polyphone.io/en/soundfonts/pianos/281-000-florestan-piano).
+
+No rights reserved. The file may be used, copied, modified and redistributed
+for any purpose without restriction or attribution requirement.
+
+Contents (SF2 format, 17 presets, all bank 0, General MIDI program numbers):
+  2 Piano, 10 Music Box, 12 Marimba, 19 Church Org.1, 21 Accordion Fr,
+  24 Nylon-str.Gt, 38 Synth Bass 1, 40 Violin, 45 PizzicatoStr, 55 OrchestraHit,
+  61 Brass 1, 75 Pan Flute, 87 Bass & Lead, 90 Polysynth, 97 Soundtrack,
+  109 Bagpipe, 116 Taiko.
+Note: the piano preset is at bank 0 program 2 (there is no preset at program 0).

@@ -1,0 +1,195 @@
+# midi-party default keymap: arrow keys + mnemonic letters.
+#
+# One table per mode: [normal], [select], [move].
+# Keys:   "Right", "Shift+Right", "n", "[" ... or a sequence "f t" (space separated).
+#         Modifiers: Shift+ Ctrl+ Alt+ Cmd+. Named keys: Up Down Left Right Space Enter
+#         Escape Tab Backspace Delete Home End PageUp PageDown. Uppercase letters are not
+#         accepted: write "Shift+n", not "N". Shifted symbols are spelled with the
+#         unshifted key: "?" is "Shift+/", ":" is "Shift+;".
+# Values: a command name ("insert_note") or an inline table with arguments
+#         ({ cmd = "move_cursor", dir = "right", unit = "grid" }).
+# Counts: type digits before a key ("3 Right" moves three steps, "4 n" inserts a note
+#         four grid steps long). Each command documents what a count does for it.
+# Anything without a key here is reachable from the command line (":" then e.g.
+# "quantize 1/8T 50%", "vel 60..110", "sel top", "keep every 3", "rename My Bass",
+# "vol 80", "pan L30", "channel 10", "sf2 gm.sf2 33", "reverb 40", "lane sustain",
+# "lane_value 90", "ramp_lane 0 127", "pedal").
+
+[normal]
+"Left"        = { cmd = "move_cursor", dir = "left",  unit = "grid" }
+"Right"       = { cmd = "move_cursor", dir = "right", unit = "grid" }
+"Up"          = { cmd = "move_cursor", dir = "up",    unit = "semitone" }
+"Down"        = { cmd = "move_cursor", dir = "down",  unit = "semitone" }
+"Shift+Left"  = { cmd = "move_cursor", dir = "left",  unit = "bar" }
+"Shift+Right" = { cmd = "move_cursor", dir = "right", unit = "bar" }
+"Shift+Up"    = { cmd = "move_cursor", dir = "up",    unit = "octave" }
+"Shift+Down"  = { cmd = "move_cursor", dir = "down",  unit = "octave" }
+"Ctrl+Left"   = { cmd = "move_cursor", dir = "left",  unit = "beat" }
+"Ctrl+Right"  = { cmd = "move_cursor", dir = "right", unit = "beat" }
+
+# --- notes
+"n"           = "insert_note"
+"Shift+n"     = { cmd = "insert_chord", intervals = [0, 4, 7] }
+"x"           = "delete_selected"
+"Delete"      = "delete_selected"
+"Backspace"   = "delete_selected"
+"."           = "repeat_last_edit"
+
+# --- selection
+"s"           = "toggle_select_under_cursor"
+"v"           = { cmd = "enter_mode", mode = "select" }
+"Shift+v"     = "enter_time_select"
+"a"           = "select_all"
+"i"           = "invert_selection"
+"b"           = "select_bar"
+"Shift+s"     = "select_chord"
+"w"           = "select_next_notes"
+"Shift+e"     = "select_to_end"
+"Shift+b"     = "select_to_start"
+"Shift+p"     = "select_same_pitch"
+"Escape"      = "clear_selection"
+"Tab"         = "selection_focus_next"
+"Shift+Tab"   = "selection_focus_prev"
+"Shift+x"     = "drop_focused"
+# filters: f + a second key
+"f t"         = "keep_top_of_chords"
+"f b"         = "keep_bottom_of_chords"
+"f e"         = "keep_every_other"
+"f o"         = "keep_on_beat"
+"f Shift+o"   = "keep_off_beat"
+"f a"         = "keep_above_cursor"
+"f l"         = "keep_below_cursor"
+"f Shift+a"   = "keep_after_cursor"
+"f Shift+b"   = "keep_before_cursor"
+
+"m"           = { cmd = "enter_mode", mode = "move" }
+
+# --- clipboard
+"c"           = "copy"
+"p"           = "paste"
+"d"           = "duplicate"
+
+"u"           = "undo"
+"Shift+u"     = "redo"
+
+# --- length, velocity, timing
+"["           = { cmd = "change_length", delta_steps = -1 }
+"]"           = { cmd = "change_length", delta_steps = 1 }
+"l"           = { cmd = "set_length", steps = 1 }
+"Shift+l"     = "legato"
+"-"           = { cmd = "nudge_velocity", delta = -5 }
+"="           = { cmd = "nudge_velocity", delta = 5 }
+"Shift+-"     = { cmd = "nudge_velocity", delta = -20 }
+"Shift+="     = { cmd = "nudge_velocity", delta = 20 }
+"h"           = { cmd = "humanize", velocity = 8, timing = 10 }
+"q"           = "quantize"
+"Shift+q"     = "quantize_length"
+"Alt+Left"    = { cmd = "nudge_selected", ticks = -10 }
+"Alt+Right"   = { cmd = "nudge_selected", ticks = 10 }
+
+"Alt+Up"      = { cmd = "transpose_selected", semitones = 1 }
+"Alt+Down"    = { cmd = "transpose_selected", semitones = -1 }
+"Ctrl+Up"     = { cmd = "transpose_selected", semitones = 12 }
+"Ctrl+Down"   = { cmd = "transpose_selected", semitones = -12 }
+
+# --- view
+"g"           = { cmd = "cycle_grid", dir = "next" }
+"Shift+g"     = { cmd = "cycle_grid", dir = "prev" }
+"t"           = "next_track"
+"Shift+t"     = "prev_track"
+"Cmd+="       = "zoom_in"
+"Cmd+-"       = "zoom_out"
+"Cmd+Shift+=" = "zoom_rows_in"
+"Cmd+Shift+-" = "zoom_rows_out"
+"Shift+/"     = "toggle_cheat_sheet"
+
+# --- tracks and mixer
+"Cmd+t"       = "add_track"
+"Cmd+Shift+t" = "remove_track"
+"Cmd+d"       = "duplicate_track"
+"Cmd+Up"      = "move_track_up"
+"Cmd+Down"    = "move_track_down"
+"Ctrl+m"      = "toggle_mute"
+"Ctrl+s"      = "toggle_solo"
+"Ctrl+="      = { cmd = "nudge_track_volume", delta = 5 }
+"Ctrl+-"      = { cmd = "nudge_track_volume", delta = -5 }
+"Ctrl+]"      = { cmd = "nudge_track_pan", delta = 10 }
+"Ctrl+["      = { cmd = "nudge_track_pan", delta = -10 }
+"Ctrl+."      = "next_preset"
+"Ctrl+,"      = "prev_preset"
+
+# --- controller lanes (sustain, pitch bend, mod wheel, volume, pan)
+"Shift+c"         = "cycle_lane"
+"Ctrl+Shift+Up"   = { cmd = "nudge_lane_value", delta = 8 }
+"Ctrl+Shift+Down" = { cmd = "nudge_lane_value", delta = -8 }
+"Ctrl+Shift+x"    = "clear_lane"
+"Ctrl+Shift+d"    = "sustain_down"
+"Ctrl+Shift+u"    = "sustain_up"
+
+# --- transport and command line
+"Space"       = "toggle_play"
+"Enter"       = "play_from_cursor"
+"Shift+;"     = "enter_command_line"
+
+[select]
+"Left"        = { cmd = "move_cursor", dir = "left",  unit = "grid" }
+"Right"       = { cmd = "move_cursor", dir = "right", unit = "grid" }
+"Up"          = { cmd = "move_cursor", dir = "up",    unit = "semitone" }
+"Down"        = { cmd = "move_cursor", dir = "down",  unit = "semitone" }
+"Shift+Left"  = { cmd = "move_cursor", dir = "left",  unit = "bar" }
+"Shift+Right" = { cmd = "move_cursor", dir = "right", unit = "bar" }
+"Shift+Up"    = { cmd = "move_cursor", dir = "up",    unit = "octave" }
+"Shift+Down"  = { cmd = "move_cursor", dir = "down",  unit = "octave" }
+"Ctrl+Left"   = { cmd = "move_cursor", dir = "left",  unit = "beat" }
+"Ctrl+Right"  = { cmd = "move_cursor", dir = "right", unit = "beat" }
+
+"s"           = "toggle_select_under_cursor"
+"a"           = "select_all"
+"i"           = "invert_selection"
+"-"           = "enter_subtract_select"
+"Shift+v"     = "enter_time_select"
+"Tab"         = "selection_focus_next"
+"Shift+Tab"   = "selection_focus_prev"
+"x"           = "drop_focused"
+"f t"         = "keep_top_of_chords"
+"f b"         = "keep_bottom_of_chords"
+"f e"         = "keep_every_other"
+"f o"         = "keep_on_beat"
+"f Shift+o"   = "keep_off_beat"
+"f a"         = "keep_above_cursor"
+"f l"         = "keep_below_cursor"
+"f Shift+a"   = "keep_after_cursor"
+"f Shift+b"   = "keep_before_cursor"
+"Enter"       = "confirm_selection"
+"m"           = { cmd = "enter_mode", mode = "move" }   # straight into Move with the box kept
+"Escape"      = { cmd = "enter_mode", mode = "normal" }
+"Space"       = "toggle_play"
+"Shift+/"     = "toggle_cheat_sheet"
+
+[move]
+"Left"        = { cmd = "move_selected", dir = "left",  unit = "grid" }
+"Right"       = { cmd = "move_selected", dir = "right", unit = "grid" }
+"Up"          = { cmd = "move_selected", dir = "up",    unit = "semitone" }
+"Down"        = { cmd = "move_selected", dir = "down",  unit = "semitone" }
+"Shift+Left"  = { cmd = "move_selected", dir = "left",  unit = "bar" }
+"Shift+Right" = { cmd = "move_selected", dir = "right", unit = "bar" }
+"Shift+Up"    = { cmd = "move_selected", dir = "up",    unit = "octave" }
+"Shift+Down"  = { cmd = "move_selected", dir = "down",  unit = "octave" }
+"Ctrl+Left"   = { cmd = "move_selected", dir = "left",  unit = "beat" }
+"Ctrl+Right"  = { cmd = "move_selected", dir = "right", unit = "beat" }
+"Alt+Left"    = { cmd = "nudge_selected", ticks = -10 }
+"Alt+Right"   = { cmd = "nudge_selected", ticks = 10 }
+
+"["           = { cmd = "change_length", delta_steps = -1 }
+"]"           = { cmd = "change_length", delta_steps = 1 }
+"-"           = { cmd = "nudge_velocity", delta = -5 }
+"="           = { cmd = "nudge_velocity", delta = 5 }
+"Shift+-"     = { cmd = "nudge_velocity", delta = -20 }
+"Shift+="     = { cmd = "nudge_velocity", delta = 20 }
+
+"u"           = "undo"
+"Shift+u"     = "redo"
+"Escape"      = { cmd = "enter_mode", mode = "normal" }
+"Enter"       = { cmd = "enter_mode", mode = "normal" }
+"Space"       = "toggle_play"
+"Shift+/"     = "toggle_cheat_sheet"

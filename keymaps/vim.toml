@@ -1,0 +1,45 @@
+# midi-party "vim" preset: home-row cursor movement on top of the default keymap.
+#
+# Enable it by putting this line at the top of ~/.config/midi-party/keymap.toml:
+#
+#     preset = "vim"
+#
+# Everything not listed here keeps its default binding. Keys that the defaults
+# used for other things (h = humanize, l = set length, i = invert selection)
+# move to Alt+h, Alt+l and Shift+i.
+
+[normal]
+"h"       = { cmd = "move_cursor", dir = "left",  unit = "grid" }
+"l"       = { cmd = "move_cursor", dir = "right", unit = "grid" }
+"j"       = { cmd = "move_cursor", dir = "down",  unit = "semitone" }
+"k"       = { cmd = "move_cursor", dir = "up",    unit = "semitone" }
+"Shift+h" = { cmd = "move_cursor", dir = "left",  unit = "bar" }
+"Shift+l" = { cmd = "move_cursor", dir = "right", unit = "bar" }
+"Shift+j" = { cmd = "move_cursor", dir = "down",  unit = "octave" }
+"Shift+k" = { cmd = "move_cursor", dir = "up",    unit = "octave" }
+"i"       = "insert_note"
+"y"       = "copy"
+"Shift+i" = "invert_selection"
+"Alt+h"   = { cmd = "humanize", velocity = 8, timing = 10 }
+"Alt+l"   = { cmd = "set_length", steps = 1 }
+
+[select]
+"h"       = { cmd = "move_cursor", dir = "left",  unit = "grid" }
+"l"       = { cmd = "move_cursor", dir = "right", unit = "grid" }
+"j"       = { cmd = "move_cursor", dir = "down",  unit = "semitone" }
+"k"       = { cmd = "move_cursor", dir = "up",    unit = "semitone" }
+"Shift+h" = { cmd = "move_cursor", dir = "left",  unit = "bar" }
+"Shift+l" = { cmd = "move_cursor", dir = "right", unit = "bar" }
+"Shift+j" = { cmd = "move_cursor", dir = "down",  unit = "octave" }
+"Shift+k" = { cmd = "move_cursor", dir = "up",    unit = "octave" }
+"y"       = "copy"
+
+[move]
+"h"       = { cmd = "move_selected", dir = "left",  unit = "grid" }
+"l"       = { cmd = "move_selected", dir = "right", unit = "grid" }
+"j"       = { cmd = "move_selected", dir = "down",  unit = "semitone" }
+"k"       = { cmd = "move_selected", dir = "up",    unit = "semitone" }
+"Shift+h" = { cmd = "move_selected", dir = "left",  unit = "bar" }
+"Shift+l" = { cmd = "move_selected", dir = "right", unit = "bar" }
+"Shift+j" = { cmd = "move_selected", dir = "down",  unit = "octave" }
+"Shift+k" = { cmd = "move_selected", dir = "up",    unit = "octave" }
