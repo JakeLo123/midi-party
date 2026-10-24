@@ -445,6 +445,10 @@ impl Track {
 /// A whole project: timing maps plus tracks.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Song {
+    /// Project-file layout this song was saved with ([`crate::project::FORMAT_VERSION`]).
+    /// Files saved before the stamp existed read as 0.
+    #[serde(default)]
+    pub format_version: u32,
     /// Ticks per quarter note. Fixed at creation (960).
     pub ppq: u32,
     pub tempo_map: TempoMap,
@@ -462,6 +466,7 @@ impl Song {
     /// One empty track named "Track 1", 120 BPM, 4/4, 960 PPQ.
     pub fn new_empty() -> Self {
         Song {
+            format_version: crate::project::FORMAT_VERSION,
             ppq: DEFAULT_PPQ,
             tempo_map: TempoMap::constant(120.0),
             meter_map: MeterMap::constant(4, 4),

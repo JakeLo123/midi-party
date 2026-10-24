@@ -39,7 +39,7 @@ const AUTOSAVE_INTERVAL: Duration = Duration::from_secs(30);
 const EXPORT_SAMPLE_RATE: u32 = 44_100;
 
 #[derive(Parser)]
-#[command(name = "midi-party")]
+#[command(name = "midi-party", version)]
 struct Args {
     /// A .ron project or .mid file to open.
     file: Option<PathBuf>,

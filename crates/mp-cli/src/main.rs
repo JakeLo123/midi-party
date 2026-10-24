@@ -14,7 +14,7 @@ use mp_audio::{load_soundfont, render_song_from, RenderSong, SoundFontSynth, Syn
 use mp_core::{default_keymap, project, try_drive_with, Editor, Keymap, Song};
 
 #[derive(Parser)]
-#[command(name = "mp", about = "midi-party headless tools")]
+#[command(name = "mp", version, about = "midi-party headless tools")]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,

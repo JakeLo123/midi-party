@@ -3,6 +3,7 @@ source: crates/mp-core/src/editor_tests.rs
 expression: e.song
 ---
 Song(
+  format_version: 1,
   ppq: 960,
   tempo_map: [
     TempoPoint(

@@ -2,8 +2,8 @@
 
 A keyboard-driven, modal MIDI piano-roll editor and small DAW, written in Rust.
 Every edit — selecting, moving, stretching, velocity, copy/paste, tracks,
-controller lanes — is a key press, and every key is remappable. Full design and
-milestone plan: `docs/PLAN.md`; what is verified and what is not: `docs/STATUS.md`.
+controller lanes — is a key press, and every key is remappable. What changed in
+each version: `CHANGELOG.md`; ideas for later: `docs/PLAN.md`.
 
 ## Build and run
 
@@ -66,10 +66,23 @@ cargo run -p mp-cli -- render --sf2 assets/soundfonts/florestan-subset.sf2 --son
 
 ## Layout
 
-- `crates/mp-core` — song model, tempo/meter math, the `Command` enum (95 commands), keymap, undo, command-line parser, `.mid` and `.ron` files. Pure, 158 tests.
+- `crates/mp-core` — song model, tempo/meter math, the `Command` enum (95 commands), keymap, undo, command-line parser, `.mid` and `.ron` files. Pure, 161 tests.
 - `crates/mp-audio` — real-time engine (cpal + rustysynth), sequencer, offline WAV/MP3 render. The audio callback is tested to allocate nothing.
 - `crates/mp-app` — the egui window: piano roll, track panel, lane strip, status bar, cheat sheet, command line, keymap editor.
 - `crates/mp-cli` — `mp keys` / `mp render` for scripts and tests.
+
+## Versions
+
+The version number lives in one place, `version` in the root `Cargo.toml`, and
+follows `0.MINOR.PATCH`: the middle number goes up for new features or changed
+keys, the last for fixes only. Changes collect under *Unreleased* in
+`CHANGELOG.md`; a release moves them under the new number and tags the commit
+`vX.Y.Z`. `midi-party --version` prints it, and the cheat sheet shows it.
+
+Saved `.ron` songs carry a separate `format_version`. A file from a newer
+format is refused with a clear message; raise `FORMAT_VERSION` in
+`crates/mp-core/src/project.rs` only when older builds could no longer read
+new files.
 
 ## Licensing note
 

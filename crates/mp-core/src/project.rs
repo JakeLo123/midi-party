@@ -2,9 +2,24 @@
 
 use std::path::{Path, PathBuf};
 
+use serde::Deserialize;
 use thiserror::Error;
 
 use crate::song::Song;
+
+/// Layout version written into every project file. Raise it when a change
+/// would stop older builds from reading new files, and make [`from_ron_str`]
+/// upgrade files with a lower number.
+pub const FORMAT_VERSION: u32 = 1;
+
+/// Just the version stamp of a project file, read before the rest so a file
+/// from a newer build gets a clear message instead of a parse error.
+#[derive(Deserialize)]
+#[serde(rename = "Song")]
+struct Stamp {
+    #[serde(default)]
+    format_version: u32,
+}
 
 /// Problems saving or loading a project file.
 #[derive(Debug, Error)]
@@ -23,6 +38,8 @@ pub enum ProjectError {
     },
     #[error("project file is not valid: {0}")]
     Parse(#[from] ron::error::SpannedError),
+    #[error("saved by a newer midi-party (project format {found}; this build reads up to {FORMAT_VERSION}): update midi-party to open it")]
+    NewerFormat { found: u32 },
     #[error("cannot serialize project: {0}")]
     Serialize(#[from] ron::Error),
 }
@@ -35,7 +52,12 @@ pub fn to_ron_string(song: &Song) -> Result<String, ProjectError> {
 
 /// Parses a song from RON text. Tempo and meter maps are validated on the way in.
 pub fn from_ron_str(text: &str) -> Result<Song, ProjectError> {
+    let Stamp { format_version } = ron::from_str(text)?;
+    if format_version > FORMAT_VERSION {
+        return Err(ProjectError::NewerFormat { found: format_version });
+    }
     let mut song: Song = ron::from_str(text)?;
+    song.format_version = FORMAT_VERSION;
     song.normalize();
     Ok(song)
 }
@@ -107,6 +129,29 @@ mod tests {
         let text = to_ron_string(&sample()).unwrap().replacen("tick: 0,", "tick: 7,", 1);
         let err = from_ron_str(&text).unwrap_err();
         assert!(err.to_string().contains("tick 0"), "{err}");
+    }
+
+    #[test]
+    fn saved_files_carry_the_format_version() {
+        let text = to_ron_string(&sample()).unwrap();
+        assert!(text.contains(&format!("format_version: {FORMAT_VERSION},")), "{text}");
+    }
+
+    #[test]
+    fn unstamped_file_loads_at_the_current_version() {
+        let text = to_ron_string(&sample()).unwrap().replacen(&format!("format_version: {FORMAT_VERSION},"), "", 1);
+        assert_eq!(from_ron_str(&text).unwrap(), sample());
+    }
+
+    #[test]
+    fn newer_format_is_refused_with_a_clear_message() {
+        let newer = FORMAT_VERSION + 1;
+        let text = to_ron_string(&sample())
+            .unwrap()
+            .replacen(&format!("format_version: {FORMAT_VERSION},"), &format!("format_version: {newer}, future_field: 1,"), 1);
+        let err = from_ron_str(&text).unwrap_err();
+        assert!(matches!(err, ProjectError::NewerFormat { found } if found == newer));
+        assert!(err.to_string().contains("update midi-party"), "{err}");
     }
 
     #[test]

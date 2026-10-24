@@ -35,7 +35,12 @@ pub fn draw(ctx: &egui::Context, keymap: &Keymap, theme: &Theme) {
             let inner_w = size.x - 28.0;
             ui.set_min_size(Vec2::new(inner_w, size.y - 28.0));
             ui.set_max_width(inner_w);
-            ui.label(mono("KEY BINDINGS").color(theme.color("status_mode")).strong());
+            ui.horizontal(|ui| {
+                ui.label(mono("KEY BINDINGS").color(theme.color("status_mode")).strong());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(mono(concat!("midi-party ", env!("CARGO_PKG_VERSION"))).color(theme.color("status_dim")));
+                });
+            });
             ui.add(
                 egui::Label::new(
                     mono("Escape or Shift+/ closes. Type a number before a key to repeat it. ~/.config/midi-party/keymap.toml overrides any of this and reloads on save.")
