@@ -20,7 +20,7 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
-use crate::editor::{Command, CycleDir, Dir, Mode, Unit};
+use crate::editor::{Command, CycleDir, Dir, Unit};
 use crate::song::LaneKind;
 use crate::time::Grid;
 
@@ -50,6 +50,7 @@ struct Spec {
 /// One entry per [`Command`] variant (checked by a test against [`Command::all_names`]).
 const SPECS: &[Spec] = &[
     Spec { name: "move_cursor", args: "<left|right|up|down> <grid|beat|bar|semitone|octave>", aliases: &[] },
+    Spec { name: "extend_selection", args: "<left|right|up|down> <grid|beat|bar|semitone|octave>", aliases: &[] },
     Spec { name: "insert_note", args: "", aliases: &["n"] },
     Spec { name: "insert_chord", args: "<intervals e.g. 0,4,7>", aliases: &["chord"] },
     Spec { name: "delete_selected", args: "", aliases: &["del", "delete"] },
@@ -70,10 +71,6 @@ const SPECS: &[Spec] = &[
     Spec { name: "undo", args: "", aliases: &["u"] },
     Spec { name: "redo", args: "", aliases: &[] },
     Spec { name: "toggle_select_under_cursor", args: "", aliases: &[] },
-    Spec { name: "enter_mode", args: "<normal|select|move|command_line>", aliases: &["mode"] },
-    Spec { name: "enter_time_select", args: "", aliases: &[] },
-    Spec { name: "enter_subtract_select", args: "", aliases: &[] },
-    Spec { name: "confirm_selection", args: "", aliases: &[] },
     Spec { name: "select_all", args: "", aliases: &["sel all"] },
     Spec { name: "clear_selection", args: "", aliases: &["sel none"] },
     Spec { name: "select_bar", args: "", aliases: &["sel bar"] },
@@ -100,6 +97,7 @@ const SPECS: &[Spec] = &[
     Spec { name: "keep_after_cursor", args: "", aliases: &["keep after"] },
     Spec { name: "keep_before_cursor", args: "", aliases: &["keep before"] },
     Spec { name: "copy", args: "", aliases: &["c"] },
+    Spec { name: "cut", args: "", aliases: &[] },
     Spec { name: "paste", args: "", aliases: &["p"] },
     Spec { name: "duplicate", args: "", aliases: &["dup"] },
     Spec { name: "set_grid", args: "<grid e.g. 1/16, 1/8T, 1/4.>", aliases: &["grid"] },
@@ -384,12 +382,6 @@ const UNITS: &[(&str, Unit)] = &[
     ("semitone", Unit::Semitone),
     ("octave", Unit::Octave),
 ];
-const MODES: &[(&str, Mode)] = &[
-    ("normal", Mode::Normal),
-    ("select", Mode::Select),
-    ("move", Mode::Move),
-    ("command_line", Mode::CommandLine),
-];
 const CYCLE: &[(&str, CycleDir)] = &[("next", CycleDir::Next), ("prev", CycleDir::Prev)];
 
 /// Parses one command line (without the leading `:`).
@@ -404,6 +396,10 @@ pub fn parse(line: &str) -> Result<Command, CmdLineError> {
         "move_cursor" => {
             a.at_most(2)?;
             Command::MoveCursor { dir: a.one_of(0, "direction", DIRS)?, unit: a.one_of(1, "unit", UNITS)? }
+        }
+        "extend_selection" => {
+            a.at_most(2)?;
+            Command::ExtendSelection { dir: a.one_of(0, "direction", DIRS)?, unit: a.one_of(1, "unit", UNITS)? }
         }
         "insert_note" => Command::InsertNote,
         "insert_chord" => Command::InsertChord { intervals: a.intervals(0, "intervals")? },
@@ -481,13 +477,6 @@ pub fn parse(line: &str) -> Result<Command, CmdLineError> {
         "undo" => Command::Undo,
         "redo" => Command::Redo,
         "toggle_select_under_cursor" => Command::ToggleSelectUnderCursor,
-        "enter_mode" => {
-            a.at_most(1)?;
-            Command::EnterMode { mode: a.one_of(0, "mode", MODES)? }
-        }
-        "enter_time_select" => Command::EnterTimeSelect,
-        "enter_subtract_select" => Command::EnterSubtractSelect,
-        "confirm_selection" => Command::ConfirmSelection,
         "select_all" => Command::SelectAll,
         "clear_selection" => Command::ClearSelection,
         "select_bar" => Command::SelectBar,
@@ -526,6 +515,7 @@ pub fn parse(line: &str) -> Result<Command, CmdLineError> {
         "keep_after_cursor" => Command::KeepAfterCursor,
         "keep_before_cursor" => Command::KeepBeforeCursor,
         "copy" => Command::Copy,
+        "cut" => Command::Cut,
         "paste" => Command::Paste,
         "duplicate" => Command::Duplicate,
         "set_grid" => {
@@ -636,7 +626,7 @@ pub fn parse(line: &str) -> Result<Command, CmdLineError> {
 pub fn to_line(cmd: &Command) -> String {
     let name = cmd.name();
     let args: Vec<String> = match cmd {
-        Command::MoveCursor { dir, unit } | Command::MoveSelected { dir, unit } => {
+        Command::MoveCursor { dir, unit } | Command::ExtendSelection { dir, unit } | Command::MoveSelected { dir, unit } => {
             vec![dir.to_string(), unit_name(*unit).to_string()]
         }
         Command::InsertChord { intervals } => {
@@ -657,7 +647,6 @@ pub fn to_line(cmd: &Command) -> String {
         }
         Command::SetSwing { percent } => vec![format!("{percent}%")],
         Command::TransposeSelected { semitones } => vec![semitones.to_string()],
-        Command::EnterMode { mode } => vec![mode.name().to_string()],
         Command::SelectNextNotes { n } | Command::KeepEveryOther { n } => vec![n.to_string()],
         Command::SelectVelocityAbove { value } | Command::SelectVelocityBelow { value } => vec![value.to_string()],
         Command::SetGrid { grid } => vec![grid.to_string()],
@@ -687,9 +676,6 @@ pub fn to_line(cmd: &Command) -> String {
         | Command::Undo
         | Command::Redo
         | Command::ToggleSelectUnderCursor
-        | Command::EnterTimeSelect
-        | Command::EnterSubtractSelect
-        | Command::ConfirmSelection
         | Command::SelectAll
         | Command::ClearSelection
         | Command::SelectBar
@@ -712,6 +698,7 @@ pub fn to_line(cmd: &Command) -> String {
         | Command::KeepAfterCursor
         | Command::KeepBeforeCursor
         | Command::Copy
+        | Command::Cut
         | Command::Paste
         | Command::Duplicate
         | Command::NextTrack
@@ -792,7 +779,7 @@ mod tests {
             Command::NudgeSelected { ticks: -10 },
             Command::ChangeLength { delta_steps: -2 },
             Command::Quantize { grid: Some(Grid { base: Division::Eighth, modifier: GridModifier::Triplet }), strength: 50, swing: 66 },
-            Command::EnterMode { mode: Mode::CommandLine },
+            Command::ExtendSelection { dir: Dir::Up, unit: Unit::Semitone },
             Command::CycleGrid { dir: CycleDir::Prev },
             Command::SetSwing { percent: 55 },
             Command::TransposeSelected { semitones: -7 },
@@ -852,7 +839,7 @@ mod tests {
         assert_eq!(parse("chord -12,0"), Ok(Command::InsertChord { intervals: vec![-12, 0] }));
         assert_eq!(parse("grid 1/4."), Ok(Command::SetGrid { grid: Grid { base: Division::Quarter, modifier: GridModifier::Dotted } }));
         assert_eq!(parse("move_cursor Right BAR"), Ok(Command::MoveCursor { dir: Dir::Right, unit: Unit::Bar }));
-        assert_eq!(parse("mode move"), Ok(Command::EnterMode { mode: Mode::Move }));
+        assert_eq!(parse("cut"), Ok(Command::Cut));
         assert_eq!(parse("swing 60%"), Ok(Command::SetSwing { percent: 60 }));
         assert_eq!(parse("nudge -15"), Ok(Command::NudgeSelected { ticks: -15 }));
         assert_eq!(parse("len 4"), Ok(Command::SetLength { steps: 4 }));

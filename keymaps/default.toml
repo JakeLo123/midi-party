@@ -1,6 +1,10 @@
-# midi-party default keymap: arrow keys + mnemonic letters.
+# midi-party default keymap: arrow keys + mnemonic letters, no modes.
 #
-# One table per mode: [normal], [select], [move].
+# Arrows move the cursor; Shift+arrows grow a selection box; Alt+arrows move the
+# selected notes; Cmd+arrows jump a bar or an octave. Add Shift to a jump to select
+# that far, add Shift to an Alt move to move that far. Cmd+a/c/x/v/z work as usual.
+#
+# One table: [normal].
 # Keys:   "Right", "Shift+Right", "n", "[" ... or a sequence "f t" (space separated).
 #         Modifiers: Shift+ Ctrl+ Alt+ Cmd+. Named keys: Up Down Left Right Space Enter
 #         Escape Tab Backspace Delete Home End PageUp PageDown. Uppercase letters are not
@@ -20,12 +24,38 @@
 "Right"       = { cmd = "move_cursor", dir = "right", unit = "grid" }
 "Up"          = { cmd = "move_cursor", dir = "up",    unit = "semitone" }
 "Down"        = { cmd = "move_cursor", dir = "down",  unit = "semitone" }
-"Shift+Left"  = { cmd = "move_cursor", dir = "left",  unit = "bar" }
-"Shift+Right" = { cmd = "move_cursor", dir = "right", unit = "bar" }
-"Shift+Up"    = { cmd = "move_cursor", dir = "up",    unit = "octave" }
-"Shift+Down"  = { cmd = "move_cursor", dir = "down",  unit = "octave" }
 "Ctrl+Left"   = { cmd = "move_cursor", dir = "left",  unit = "beat" }
 "Ctrl+Right"  = { cmd = "move_cursor", dir = "right", unit = "beat" }
+"Cmd+Left"    = { cmd = "move_cursor", dir = "left",  unit = "bar" }
+"Cmd+Right"   = { cmd = "move_cursor", dir = "right", unit = "bar" }
+"Cmd+Up"      = { cmd = "move_cursor", dir = "up",    unit = "octave" }
+"Cmd+Down"    = { cmd = "move_cursor", dir = "down",  unit = "octave" }
+
+# --- selection box: Shift + any cursor key
+"Shift+Left"       = { cmd = "extend_selection", dir = "left",  unit = "grid" }
+"Shift+Right"      = { cmd = "extend_selection", dir = "right", unit = "grid" }
+"Shift+Up"         = { cmd = "extend_selection", dir = "up",    unit = "semitone" }
+"Shift+Down"       = { cmd = "extend_selection", dir = "down",  unit = "semitone" }
+"Ctrl+Shift+Left"  = { cmd = "extend_selection", dir = "left",  unit = "beat" }
+"Ctrl+Shift+Right" = { cmd = "extend_selection", dir = "right", unit = "beat" }
+"Cmd+Shift+Left"   = { cmd = "extend_selection", dir = "left",  unit = "bar" }
+"Cmd+Shift+Right"  = { cmd = "extend_selection", dir = "right", unit = "bar" }
+"Cmd+Shift+Up"     = { cmd = "extend_selection", dir = "up",    unit = "octave" }
+"Cmd+Shift+Down"   = { cmd = "extend_selection", dir = "down",  unit = "octave" }
+
+# --- moving notes: Alt + any cursor key
+"Alt+Left"         = { cmd = "move_selected", dir = "left",  unit = "grid" }
+"Alt+Right"        = { cmd = "move_selected", dir = "right", unit = "grid" }
+"Alt+Up"           = { cmd = "move_selected", dir = "up",    unit = "semitone" }
+"Alt+Down"         = { cmd = "move_selected", dir = "down",  unit = "semitone" }
+"Ctrl+Alt+Left"    = { cmd = "move_selected", dir = "left",  unit = "beat" }
+"Ctrl+Alt+Right"   = { cmd = "move_selected", dir = "right", unit = "beat" }
+"Alt+Shift+Left"   = { cmd = "move_selected", dir = "left",  unit = "bar" }
+"Alt+Shift+Right"  = { cmd = "move_selected", dir = "right", unit = "bar" }
+"Alt+Shift+Up"     = { cmd = "move_selected", dir = "up",    unit = "octave" }
+"Alt+Shift+Down"   = { cmd = "move_selected", dir = "down",  unit = "octave" }
+"Alt+,"            = { cmd = "nudge_selected", ticks = -10 }
+"Alt+."            = { cmd = "nudge_selected", ticks = 10 }
 
 # --- notes
 "n"           = "insert_note"
@@ -37,9 +67,8 @@
 
 # --- selection
 "s"           = "toggle_select_under_cursor"
-"v"           = { cmd = "enter_mode", mode = "select" }
-"Shift+v"     = "enter_time_select"
 "a"           = "select_all"
+"Cmd+a"       = "select_all"
 "i"           = "invert_selection"
 "b"           = "select_bar"
 "Shift+s"     = "select_chord"
@@ -62,15 +91,18 @@
 "f Shift+a"   = "keep_after_cursor"
 "f Shift+b"   = "keep_before_cursor"
 
-"m"           = { cmd = "enter_mode", mode = "move" }
-
 # --- clipboard
 "c"           = "copy"
 "p"           = "paste"
 "d"           = "duplicate"
+"Cmd+c"       = "copy"
+"Cmd+x"       = "cut"
+"Cmd+v"       = "paste"
 
 "u"           = "undo"
 "Shift+u"     = "redo"
+"Cmd+z"       = "undo"
+"Cmd+Shift+z" = "redo"
 
 # --- length, velocity, timing
 "["           = { cmd = "change_length", delta_steps = -1 }
@@ -84,13 +116,6 @@
 "h"           = { cmd = "humanize", velocity = 8, timing = 10 }
 "q"           = "quantize"
 "Shift+q"     = "quantize_length"
-"Alt+Left"    = { cmd = "nudge_selected", ticks = -10 }
-"Alt+Right"   = { cmd = "nudge_selected", ticks = 10 }
-
-"Alt+Up"      = { cmd = "transpose_selected", semitones = 1 }
-"Alt+Down"    = { cmd = "transpose_selected", semitones = -1 }
-"Ctrl+Up"     = { cmd = "transpose_selected", semitones = 12 }
-"Ctrl+Down"   = { cmd = "transpose_selected", semitones = -12 }
 
 # --- view
 "g"           = { cmd = "cycle_grid", dir = "next" }
@@ -107,8 +132,8 @@
 "Cmd+t"       = "add_track"
 "Cmd+Shift+t" = "remove_track"
 "Cmd+d"       = "duplicate_track"
-"Cmd+Up"      = "move_track_up"
-"Cmd+Down"    = "move_track_down"
+"Cmd+Alt+Up"   = "move_track_up"
+"Cmd+Alt+Down" = "move_track_down"
 "Ctrl+m"      = "toggle_mute"
 "Ctrl+s"      = "toggle_solo"
 "Ctrl+="      = { cmd = "nudge_track_volume", delta = 5 }
@@ -128,68 +153,6 @@
 
 # --- transport and command line
 "Space"       = "toggle_play"
-"Enter"       = "play_from_cursor"
+"Enter"       = "play"
+"Shift+Enter" = "play_from_cursor"
 "Shift+;"     = "enter_command_line"
-
-[select]
-"Left"        = { cmd = "move_cursor", dir = "left",  unit = "grid" }
-"Right"       = { cmd = "move_cursor", dir = "right", unit = "grid" }
-"Up"          = { cmd = "move_cursor", dir = "up",    unit = "semitone" }
-"Down"        = { cmd = "move_cursor", dir = "down",  unit = "semitone" }
-"Shift+Left"  = { cmd = "move_cursor", dir = "left",  unit = "bar" }
-"Shift+Right" = { cmd = "move_cursor", dir = "right", unit = "bar" }
-"Shift+Up"    = { cmd = "move_cursor", dir = "up",    unit = "octave" }
-"Shift+Down"  = { cmd = "move_cursor", dir = "down",  unit = "octave" }
-"Ctrl+Left"   = { cmd = "move_cursor", dir = "left",  unit = "beat" }
-"Ctrl+Right"  = { cmd = "move_cursor", dir = "right", unit = "beat" }
-
-"s"           = "toggle_select_under_cursor"
-"a"           = "select_all"
-"i"           = "invert_selection"
-"-"           = "enter_subtract_select"
-"Shift+v"     = "enter_time_select"
-"Tab"         = "selection_focus_next"
-"Shift+Tab"   = "selection_focus_prev"
-"x"           = "drop_focused"
-"f t"         = "keep_top_of_chords"
-"f b"         = "keep_bottom_of_chords"
-"f e"         = "keep_every_other"
-"f o"         = "keep_on_beat"
-"f Shift+o"   = "keep_off_beat"
-"f a"         = "keep_above_cursor"
-"f l"         = "keep_below_cursor"
-"f Shift+a"   = "keep_after_cursor"
-"f Shift+b"   = "keep_before_cursor"
-"Enter"       = "confirm_selection"
-"m"           = { cmd = "enter_mode", mode = "move" }   # straight into Move with the box kept
-"Escape"      = { cmd = "enter_mode", mode = "normal" }
-"Space"       = "toggle_play"
-"Shift+/"     = "toggle_cheat_sheet"
-
-[move]
-"Left"        = { cmd = "move_selected", dir = "left",  unit = "grid" }
-"Right"       = { cmd = "move_selected", dir = "right", unit = "grid" }
-"Up"          = { cmd = "move_selected", dir = "up",    unit = "semitone" }
-"Down"        = { cmd = "move_selected", dir = "down",  unit = "semitone" }
-"Shift+Left"  = { cmd = "move_selected", dir = "left",  unit = "bar" }
-"Shift+Right" = { cmd = "move_selected", dir = "right", unit = "bar" }
-"Shift+Up"    = { cmd = "move_selected", dir = "up",    unit = "octave" }
-"Shift+Down"  = { cmd = "move_selected", dir = "down",  unit = "octave" }
-"Ctrl+Left"   = { cmd = "move_selected", dir = "left",  unit = "beat" }
-"Ctrl+Right"  = { cmd = "move_selected", dir = "right", unit = "beat" }
-"Alt+Left"    = { cmd = "nudge_selected", ticks = -10 }
-"Alt+Right"   = { cmd = "nudge_selected", ticks = 10 }
-
-"["           = { cmd = "change_length", delta_steps = -1 }
-"]"           = { cmd = "change_length", delta_steps = 1 }
-"-"           = { cmd = "nudge_velocity", delta = -5 }
-"="           = { cmd = "nudge_velocity", delta = 5 }
-"Shift+-"     = { cmd = "nudge_velocity", delta = -20 }
-"Shift+="     = { cmd = "nudge_velocity", delta = 20 }
-
-"u"           = "undo"
-"Shift+u"     = "redo"
-"Escape"      = { cmd = "enter_mode", mode = "normal" }
-"Enter"       = { cmd = "enter_mode", mode = "normal" }
-"Space"       = "toggle_play"
-"Shift+/"     = "toggle_cheat_sheet"

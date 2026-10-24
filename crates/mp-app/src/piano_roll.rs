@@ -3,7 +3,7 @@
 //! All editing state lives in the `Editor`; the app applies the actions.
 
 use egui::{Align2, Color32, FontId, Painter, Pos2, Rangef, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
-use mp_core::{pitch_name, Editor, LaneKind, Mode, NoteId, Tick};
+use mp_core::{pitch_name, Editor, LaneKind, NoteId, Tick};
 
 use crate::theme::Theme;
 
@@ -467,34 +467,26 @@ impl RollView {
     }
 
     fn draw_selection_box(&self, painter: &Painter, area: Rect, editor: &Editor, theme: &Theme) {
-        if editor.mode != Mode::Select {
-            return;
-        }
-        let Some(anchor) = editor.select_anchor else { return };
+        let Some(anchor) = editor.box_anchor else { return };
         let grid = editor.grid_ticks().get();
         let t0 = anchor.tick.get().min(editor.cursor.tick.get());
         let t1 = anchor.tick.get().max(editor.cursor.tick.get()) + grid;
-        let (p_hi, p_lo) = if editor.select_all_pitches {
-            (127, 0)
-        } else {
-            (anchor.pitch.max(editor.cursor.pitch) as i32, anchor.pitch.min(editor.cursor.pitch) as i32)
-        };
+        let p_hi = anchor.pitch.max(editor.cursor.pitch) as i32;
+        let p_lo = anchor.pitch.min(editor.cursor.pitch) as i32;
         let r = Rect::from_min_max(
             Pos2::new(self.x_of(area, t0 as f64), self.y_of(area, p_hi)),
             Pos2::new(self.x_of(area, t1 as f64), self.y_of(area, p_lo) + self.row_h),
         );
-        let color = theme.color(if editor.select_subtract { "playhead" } else { "note_selected" });
         painter.rect_filled(r, 0.0, theme.color("cursor_fill"));
-        painter.rect_stroke(r, 0.0, Stroke::new(1.0, color), StrokeKind::Inside);
+        painter.rect_stroke(r, 0.0, Stroke::new(1.0, theme.color("note_selected")), StrokeKind::Inside);
     }
 
     fn draw_cursor(&self, painter: &Painter, area: Rect, editor: &Editor, theme: &Theme) {
         let start = editor.cursor.tick.get();
         let end = start + editor.grid_ticks().get();
         let r = self.note_rect(area, start, end, editor.cursor.pitch).expand(1.0);
-        let width = if editor.mode == Mode::Move { 1.0 } else { 2.0 };
         painter.rect_filled(r, 0.0, theme.color("cursor_fill"));
-        painter.rect_stroke(r, 0.0, Stroke::new(width, theme.color("cursor")), StrokeKind::Outside);
+        painter.rect_stroke(r, 0.0, Stroke::new(2.0, theme.color("cursor")), StrokeKind::Outside);
     }
 
     fn draw_key_column(&self, painter: &Painter, rect: Rect, area: Rect, theme: &Theme, font: &FontId) {

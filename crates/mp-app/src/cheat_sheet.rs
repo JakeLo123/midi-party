@@ -1,4 +1,4 @@
-//! The `?` overlay: every binding of the live keymap, grouped by mode and category.
+//! The `?` overlay: every binding of the live keymap, grouped by category.
 
 use std::collections::BTreeMap;
 
@@ -50,17 +50,19 @@ pub fn draw(ctx: &egui::Context, keymap: &Keymap, theme: &Theme) {
             );
             ui.add_space(8.0);
             egui::ScrollArea::vertical().show(ui, |ui| {
-                let modes = [Mode::Normal, Mode::Select, Mode::Move];
-                let column_w = (inner_w - 24.0) / modes.len() as f32;
+                let columns = balanced_columns(groups(keymap), 3);
+                let column_w = (inner_w - 24.0) / columns.len() as f32;
                 ui.horizontal_top(|ui| {
-                    for (i, mode) in modes.into_iter().enumerate() {
+                    for (i, column) in columns.iter().enumerate() {
                         if i > 0 {
                             ui.add_space(12.0);
                         }
                         ui.vertical(|ui| {
                             ui.set_width(column_w);
                             ui.set_max_width(column_w);
-                            draw_mode(ui, keymap, mode, theme, &font);
+                            for (category, rows) in column {
+                                draw_group(ui, category, rows, theme, &font);
+                            }
                         });
                     }
                 });
@@ -68,30 +70,68 @@ pub fn draw(ctx: &egui::Context, keymap: &Keymap, theme: &Theme) {
         });
 }
 
-fn draw_mode(ui: &mut egui::Ui, keymap: &Keymap, mode: Mode, theme: &Theme, font: &FontId) {
-    let mono = |s: &str| RichText::new(s).font(font.clone());
-    ui.label(mono(&format!("{} mode", mode.name().to_uppercase())).color(theme.color("status_mode")).strong());
+type Group = (String, Vec<(String, String)>);
+
+/// Every binding grouped by category, rows sorted, with the app's own keys appended.
+fn groups(keymap: &Keymap) -> Vec<Group> {
     let mut groups: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
-    for (keys, cmd) in keymap.bindings(mode) {
-        groups.entry(cmd.category().to_string()).or_default().push((keys, cmd.describe()));
+    for (keys, cmd) in keymap.bindings(Mode::Normal) {
+        groups.entry(cmd.category().to_string().to_lowercase()).or_default().push((keys, cmd.describe()));
     }
-    if mode == Mode::Normal {
-        let app = groups.entry("app".into()).or_default();
-        app.extend(APP_BINDINGS.iter().map(|(k, d)| (k.to_string(), d.to_string())));
+    groups.entry("app".into()).or_default().extend(APP_BINDINGS.iter().map(|(k, d)| (k.to_string(), d.to_string())));
+    groups
+        .into_iter()
+        .map(|(category, mut rows)| {
+            rows.sort();
+            (category, rows)
+        })
+        .collect()
+}
+
+/// Deals whole groups into `n` columns, each new group going to the shortest column so
+/// far, so the columns end up about the same height. Groups keep their order within a column.
+fn balanced_columns(groups: Vec<Group>, n: usize) -> Vec<Vec<Group>> {
+    let mut columns: Vec<Vec<Group>> = vec![Vec::new(); n.max(1)];
+    let mut heights = vec![0usize; columns.len()];
+    let mut by_size: Vec<Group> = groups;
+    by_size.sort_by_key(|(_, rows)| std::cmp::Reverse(rows.len()));
+    for group in by_size {
+        let shortest = (0..columns.len()).min_by_key(|&i| heights[i]).unwrap_or(0);
+        heights[shortest] += group.1.len() + 2;
+        columns[shortest].push(group);
     }
-    for (category, mut rows) in groups {
-        rows.sort();
-        ui.add_space(6.0);
-        ui.label(mono(&category.to_lowercase()).color(theme.color("status_dim")));
-        for (keys, desc) in rows {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
-                ui.add_sized(
-                    [110.0, 0.0],
-                    egui::Label::new(mono(&keys).color(theme.color("accent"))).halign(egui::Align::RIGHT),
-                );
-                ui.add(egui::Label::new(mono(&desc).color(theme.color("status_fg"))).wrap());
-            });
-        }
+    for column in &mut columns {
+        column.sort_by(|a, b| a.0.cmp(&b.0));
+    }
+    columns
+}
+
+fn draw_group(ui: &mut egui::Ui, category: &str, rows: &[(String, String)], theme: &Theme, font: &FontId) {
+    let mono = |s: &str| RichText::new(s).font(font.clone());
+    ui.add_space(6.0);
+    ui.label(mono(category).color(theme.color("status_dim")));
+    for (keys, desc) in rows {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            ui.add_sized([130.0, 0.0], egui::Label::new(mono(keys).color(theme.color("accent"))).halign(egui::Align::RIGHT));
+            ui.add(egui::Label::new(mono(desc).color(theme.color("status_fg"))).wrap());
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn columns_balance_by_row_count() {
+        let groups: Vec<Group> = [("a", 10), ("b", 6), ("c", 5), ("d", 1), ("e", 1)]
+            .into_iter()
+            .map(|(name, n)| (name.to_string(), vec![(String::new(), String::new()); n]))
+            .collect();
+        let columns = balanced_columns(groups, 3);
+        let heights: Vec<usize> = columns.iter().map(|c| c.iter().map(|g| g.1.len()).sum()).collect();
+        assert_eq!(heights, vec![10, 7, 6]);
+        assert_eq!(columns[1].iter().map(|g| g.0.as_str()).collect::<Vec<_>>(), vec!["b", "e"]);
     }
 }

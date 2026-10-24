@@ -6,10 +6,10 @@ use std::collections::BTreeSet;
 
 use crate::cmdline;
 use crate::editor::{
-    Command, CycleDir, Dir, EditError, EditorEvent, Mode, TransportRequest, Unit, ViewRequest, ZOOM_ROWS_STEP,
+    Command, Cursor, CycleDir, Dir, EditError, EditorEvent, Mode, TransportRequest, Unit, ViewRequest, ZOOM_ROWS_STEP,
     ZOOM_TIME_STEP,
 };
-use crate::keymap::Keymap;
+use crate::keymap::{parse_sequence, Keymap, Resolution};
 use crate::song::{Instrument, LaneKind, NoteId, Song, Tick, Track};
 use crate::test_harness::{default_keymap, drive, drive_with, try_drive_with, DriveError, DEFAULT_KEYMAP_TOML};
 use crate::time::{Division, Grid, GridModifier};
@@ -107,6 +107,26 @@ fn last_status(ev: &[EditorEvent]) -> &str {
     status(ev).last().copied().unwrap_or("")
 }
 
+/// `"1 1 u"`: a count typed digit by digit before `key`.
+fn counted(n: usize, key: &str) -> String {
+    let digits: Vec<String> = n.to_string().chars().map(String::from).collect();
+    format!("{} {key}", digits.join(" "))
+}
+
+/// The command a key (or key sequence) resolves to in Normal mode.
+fn bound(keymap: &Keymap, keys: &str) -> Command {
+    let mut k = keymap.clone();
+    let mut cmd = None;
+    for chord in parse_sequence(keys).unwrap() {
+        match k.feed(Mode::Normal, chord) {
+            Resolution::Command(c) => cmd = Some(c),
+            Resolution::Pending => {}
+            other => panic!("{keys}: {other:?}"),
+        }
+    }
+    cmd.unwrap_or_else(|| panic!("{keys} is not bound"))
+}
+
 // ---------------------------------------------------------------- keymap file
 
 #[test]
@@ -116,31 +136,36 @@ fn default_keymap_loads_and_every_binding_is_a_real_command() {
     // a note so note-targeting commands have something to act on
     let n = song.new_note(Tick(0), Tick(G), 60, 100);
     song.tracks[0].insert_note(n);
-    let mut total = 0;
-    for mode in [Mode::Normal, Mode::Select, Mode::Move] {
-        let bindings = keymap.bindings(mode);
-        assert!(!bindings.is_empty(), "{mode} has bindings");
-        for (keys, cmd) in bindings {
-            total += 1;
-            assert!(!cmd.describe().is_empty(), "{keys} -> {cmd:?}");
-            // every bound command executes on a fresh editor (errors are fine: it means
-            // the variant exists and was matched; panics would mean a todo!())
-            let mut e = Editor::new(song.clone());
-            e.mode = mode;
-            e.selection.insert(n.id);
-            let _ = e.execute(cmd, None);
-        }
+    let bindings = keymap.bindings(Mode::Normal);
+    assert!(bindings.len() > 100, "{} bindings", bindings.len());
+    for (keys, cmd) in &bindings {
+        assert!(!cmd.describe().is_empty(), "{keys} -> {cmd:?}");
+        // every bound command executes on a fresh editor (errors are fine: it means
+        // the variant exists and was matched; panics would mean a todo!())
+        let mut e = Editor::new(song.clone());
+        e.selection.insert(n.id);
+        let _ = e.execute(cmd, None);
     }
-    assert!(total > 100, "{total} bindings");
-    // arrows are bound in every mode
-    for mode in [Mode::Normal, Mode::Select, Mode::Move] {
-        assert!(keymap.bindings(mode).iter().any(|(k, _)| k == "Right"), "{mode}");
-    }
-    assert_eq!(keymap.key_for(Mode::Normal, &Command::Undo).as_deref(), Some("u"));
-    assert_eq!(keymap.key_for(Mode::Normal, &Command::Redo).as_deref(), Some("Shift+u"));
+    assert!(keymap.bindings(Mode::CommandLine).is_empty(), "the command line takes text, not keys");
+    // arrows: plain moves the cursor, Shift grows the box, Alt moves notes, Cmd jumps
+    assert_eq!(bound(&keymap, "Right"), Command::MoveCursor { dir: Dir::Right, unit: Unit::Grid });
+    assert_eq!(bound(&keymap, "Ctrl+Right"), Command::MoveCursor { dir: Dir::Right, unit: Unit::Beat });
+    assert_eq!(bound(&keymap, "Cmd+Right"), Command::MoveCursor { dir: Dir::Right, unit: Unit::Bar });
+    assert_eq!(bound(&keymap, "Cmd+Up"), Command::MoveCursor { dir: Dir::Up, unit: Unit::Octave });
+    assert_eq!(bound(&keymap, "Shift+Right"), Command::ExtendSelection { dir: Dir::Right, unit: Unit::Grid });
+    assert_eq!(bound(&keymap, "Ctrl+Shift+Right"), Command::ExtendSelection { dir: Dir::Right, unit: Unit::Beat });
+    assert_eq!(bound(&keymap, "Cmd+Shift+Left"), Command::ExtendSelection { dir: Dir::Left, unit: Unit::Bar });
+    assert_eq!(bound(&keymap, "Cmd+Shift+Up"), Command::ExtendSelection { dir: Dir::Up, unit: Unit::Octave });
+    assert_eq!(bound(&keymap, "Alt+Right"), Command::MoveSelected { dir: Dir::Right, unit: Unit::Grid });
+    assert_eq!(bound(&keymap, "Ctrl+Alt+Right"), Command::MoveSelected { dir: Dir::Right, unit: Unit::Beat });
+    assert_eq!(bound(&keymap, "Alt+Shift+Right"), Command::MoveSelected { dir: Dir::Right, unit: Unit::Bar });
+    assert_eq!(bound(&keymap, "Alt+Shift+Up"), Command::MoveSelected { dir: Dir::Up, unit: Unit::Octave });
+    assert_eq!(bound(&keymap, "Enter"), Command::Play);
+    assert_eq!(bound(&keymap, "Shift+Enter"), Command::PlayFromCursor);
+    assert_eq!(bound(&keymap, "Cmd+x"), Command::Cut);
+    assert_eq!(bound(&keymap, "Cmd+Shift+z"), Command::Redo);
     // the keys the plan promises
     for (cmd, key) in [
-        (Command::EnterTimeSelect, "Shift+v"),
         (Command::RepeatLastEdit, "."),
         (Command::Quantize { grid: None, strength: 100, swing: 0 }, "q"),
         (Command::Legato, "Shift+l"),
@@ -153,8 +178,11 @@ fn default_keymap_loads_and_every_binding_is_a_real_command() {
         (Command::SelectionFocusPrev, "Shift+Tab"),
         (Command::DropFocused, "Shift+x"),
         (Command::KeepTopOfChords, "f t"),
+        (Command::NudgeSelected { ticks: 10 }, "Alt+."),
+        (Command::NudgeSelected { ticks: -10 }, "Alt+,"),
         (Command::TogglePlay, "Space"),
-        (Command::PlayFromCursor, "Enter"),
+        (Command::Play, "Enter"),
+        (Command::PlayFromCursor, "Shift+Enter"),
         (Command::ToggleCheatSheet, "Shift+/"),
         (Command::EnterCommandLine, "Shift+;"),
         (Command::ZoomIn, "Cmd+="),
@@ -163,8 +191,8 @@ fn default_keymap_loads_and_every_binding_is_a_real_command() {
         // key_for spells modifiers canonically: Ctrl, Alt, Shift, Cmd
         (Command::RemoveTrack, "Shift+Cmd+t"),
         (Command::DuplicateTrack, "Cmd+d"),
-        (Command::MoveTrackUp, "Cmd+Up"),
-        (Command::MoveTrackDown, "Cmd+Down"),
+        (Command::MoveTrackUp, "Alt+Cmd+Up"),
+        (Command::MoveTrackDown, "Alt+Cmd+Down"),
         (Command::ToggleMute, "Ctrl+m"),
         (Command::ToggleSolo, "Ctrl+s"),
         (Command::NudgeTrackVolume { delta: 5 }, "Ctrl+="),
@@ -183,18 +211,25 @@ fn default_keymap_loads_and_every_binding_is_a_real_command() {
         assert_eq!(keymap.key_for(Mode::Normal, &cmd).as_deref(), Some(key), "{}", cmd.name());
     }
     // the plan's original keys are untouched
-    for (cmd, key) in [
-        (Command::NextTrack, "t"),
-        (Command::PrevTrack, "Shift+t"),
-        (Command::Duplicate, "d"),
-        (Command::Copy, "c"),
-        (Command::TransposeSelected { semitones: 12 }, "Ctrl+Up"),
-        (Command::TransposeSelected { semitones: -12 }, "Ctrl+Down"),
-    ] {
+    for (cmd, key) in [(Command::NextTrack, "t"), (Command::PrevTrack, "Shift+t"), (Command::Duplicate, "d")] {
         assert_eq!(keymap.key_for(Mode::Normal, &cmd).as_deref(), Some(key), "{}", cmd.name());
+    }
+    // the letters keep working next to their Cmd aliases; bindings are kept in key
+    // order, so key_for (the cheat sheet) names the Cmd alias first
+    for (cmd, letter, alias) in [
+        (Command::Undo, "u", "Cmd+z"),
+        (Command::Redo, "Shift+u", "Shift+Cmd+z"),
+        (Command::Copy, "c", "Cmd+c"),
+        (Command::Paste, "p", "Cmd+v"),
+        (Command::SelectAll, "a", "Cmd+a"),
+    ] {
+        assert_eq!(bound(&keymap, letter), cmd, "{letter}");
+        assert_eq!(bound(&keymap, alias), cmd, "{alias}");
+        assert_eq!(keymap.key_for(Mode::Normal, &cmd).as_deref(), Some(alias), "{}", cmd.name());
     }
     // command-line-only commands have no key
     for cmd in [
+        Command::TransposeSelected { semitones: 12 },
         Command::RenameTrack { name: "x".into() },
         Command::SetTrackVolume { percent: 100 },
         Command::SetTrackPan { value: 0 },
@@ -209,10 +244,33 @@ fn default_keymap_loads_and_every_binding_is_a_real_command() {
         assert_eq!(keymap.key_for(Mode::Normal, &cmd), None, "{}", cmd.name());
         assert!(cmdline::usage(cmd.name()).is_some(), "{}", cmd.name());
     }
-    assert_eq!(keymap.key_for(Mode::Select, &Command::DropFocused).as_deref(), Some("x"));
-    assert_eq!(keymap.key_for(Mode::Select, &Command::EnterSubtractSelect).as_deref(), Some("-"));
-    assert_eq!(keymap.key_for(Mode::Select, &Command::ConfirmSelection).as_deref(), Some("Enter"));
-    assert_eq!(keymap.key_for(Mode::Select, &Command::PlayFromCursor), None, "Enter confirms in Select mode");
+    for key in ["v", "m", "Shift+v", "Ctrl+Up", "Ctrl+Down"] {
+        let chord = parse_sequence(key).unwrap().into_iter().next().unwrap();
+        assert_eq!(keymap.clone().feed(Mode::Normal, chord), Resolution::Unbound, "{key} must stay unbound by default");
+    }
+}
+
+#[test]
+fn cmd_aliases_resolve() {
+    let keymap = km();
+    assert_eq!(bound(&keymap, "Cmd+a"), Command::SelectAll);
+    assert_eq!(bound(&keymap, "Cmd+c"), Command::Copy);
+    assert_eq!(bound(&keymap, "Cmd+x"), Command::Cut);
+    assert_eq!(bound(&keymap, "Cmd+v"), Command::Paste);
+    assert_eq!(bound(&keymap, "Cmd+z"), Command::Undo);
+    assert_eq!(bound(&keymap, "Cmd+Shift+z"), Command::Redo);
+    assert_eq!(bound(&keymap, "Shift+Cmd+z"), Command::Redo, "modifier order does not matter");
+    let mut e = Editor::new(song3());
+    let mut k = km();
+    drive_with(&mut e, &mut k, "Cmd+a Cmd+c Cmd+Right Cmd+v");
+    assert_eq!(e.track().unwrap().notes.len(), 6);
+    drive_with(&mut e, &mut k, "Cmd+z");
+    assert_eq!(e.song, song3());
+    drive_with(&mut e, &mut k, "Cmd+Shift+z");
+    assert_eq!(e.track().unwrap().notes.len(), 6);
+    drive_with(&mut e, &mut k, "Cmd+a Cmd+x");
+    assert!(e.track().unwrap().notes.is_empty());
+    assert_eq!(e.clipboard.len(), 6);
 }
 
 #[test]
@@ -243,12 +301,12 @@ fn move_cursor_by_grid_and_semitone() {
 
 #[test]
 fn move_cursor_by_bar_beat_and_octave() {
-    let e = drive(Song::new_empty(), &km(), "Shift+Right Shift+Up Ctrl+Right");
+    let e = drive(Song::new_empty(), &km(), "Cmd+Right Cmd+Up Ctrl+Right");
     assert_eq!(e.cursor.tick, Tick(3840 + 960));
     assert_eq!(e.cursor.pitch, 72);
-    let e = drive(Song::new_empty(), &km(), "Shift+Up Shift+Up Shift+Up Shift+Up Shift+Up Shift+Up");
+    let e = drive(Song::new_empty(), &km(), "Cmd+Up Cmd+Up Cmd+Up Cmd+Up Cmd+Up Cmd+Up");
     assert_eq!(e.cursor.pitch, 127, "pitch clamps at 127");
-    let e = drive(Song::new_empty(), &km(), "Shift+Down Shift+Down Shift+Down Shift+Down Shift+Down Shift+Down");
+    let e = drive(Song::new_empty(), &km(), "Cmd+Down Cmd+Down Cmd+Down Cmd+Down Cmd+Down Cmd+Down");
     assert_eq!(e.cursor.pitch, 0, "pitch clamps at 0");
 }
 
@@ -267,6 +325,21 @@ fn counts_repeat_cursor_moves() {
     assert_eq!(e.count, None);
     drive_with(&mut e, &mut k, "Right");
     assert_eq!(e.cursor.tick, Tick(G));
+}
+
+#[test]
+fn plain_arrow_clears_selection() {
+    for keys in ["a Right", "a Up", "a 3 Left", "a Ctrl+Right", "a Cmd+Right", "a Cmd+Up"] {
+        let e = drive(song3(), &km(), keys);
+        assert!(e.selection.is_empty(), "{keys}");
+        assert_eq!(e.undo.undo_depth(), 0, "{keys}");
+    }
+    // a box in progress goes too
+    let e = drive(song3(), &km(), "Shift+Right Shift+Up Shift+Up Shift+Up Shift+Up Left");
+    assert!(e.selection.is_empty());
+    assert_eq!(e.box_anchor, None);
+    assert_eq!(e.cursor.tick, Tick::ZERO);
+    assert_eq!(e.cursor.pitch, 64);
 }
 
 // ---------------------------------------------------------------- insert / delete
@@ -354,39 +427,105 @@ fn toggle_select_under_cursor() {
 }
 
 #[test]
-fn select_mode_box_and_confirm() {
+fn shift_arrows_box_select() {
     let mut e = Editor::new(song3());
     let mut k = km();
-    let ev = drive_with(&mut e, &mut k, "v");
-    assert_eq!(e.mode, Mode::Select);
-    assert_eq!(e.select_anchor, Some(e.cursor));
-    assert!(ev.contains(&EditorEvent::ModeChanged(Mode::Select)));
-    assert_eq!(ids(&e), vec![1], "anchor cell already selects the note at the cursor");
-    drive_with(&mut e, &mut k, "Right Up Up Up Up");
+    let ev = drive_with(&mut e, &mut k, "Shift+Right");
+    assert_eq!(e.mode, Mode::Normal, "no mode change");
+    assert!(!ev.iter().any(|e| matches!(e, EditorEvent::ModeChanged(_))));
+    assert_eq!(e.box_anchor, Some(Editor::new(song3()).cursor), "the anchor is where the cursor started");
+    assert_eq!(e.cursor.tick, Tick(G), "the cursor moves");
+    assert_eq!(ids(&e), vec![1], "the anchor cell already selects the note at the cursor");
+    assert_eq!(status(&ev), vec!["1 in box"]);
+    let ev = drive_with(&mut e, &mut k, "Shift+Up Shift+Up Shift+Up Shift+Up");
     assert_eq!(ids(&e), vec![1, 2], "box is inclusive of the cursor cell");
-    drive_with(&mut e, &mut k, "Right Right Right Up Up Up");
+    assert_eq!(last_status(&ev), "2 in box");
+    drive_with(&mut e, &mut k, "Shift+Right Shift+Right Shift+Right Shift+Up Shift+Up Shift+Up");
     assert_eq!(ids(&e), vec![1, 2, 3]);
-    drive_with(&mut e, &mut k, "Left");
+    drive_with(&mut e, &mut k, "Shift+Left");
     assert_eq!(ids(&e), vec![1, 2], "shrinking the box deselects");
-    let ev = drive_with(&mut e, &mut k, "Enter");
-    assert_eq!(e.mode, Mode::Normal);
-    assert_eq!(e.select_anchor, None);
-    assert_eq!(ids(&e), vec![1, 2], "confirm keeps the selection");
-    assert_eq!(status(&ev), vec!["2 notes selected"]);
+    assert_eq!(e.box_anchor, Some(Editor::new(song3()).cursor), "the anchor stays put");
+    assert_eq!(e.undo.undo_depth(), 0, "selecting is not an edit");
+    assert!(e.last_edit.is_none());
+    // a count extends that many steps
+    let e = drive(song3(), &km(), "4 Shift+Right 7 Shift+Up");
+    assert_eq!(ids(&e), vec![1, 2, 3]);
+    assert_eq!(e.cursor.tick, Tick(4 * G));
+    assert_eq!(e.cursor.pitch, 67);
 }
 
 #[test]
-fn select_mode_escape_cancels() {
-    let e = drive(song3(), &km(), "v Right Right Right Right Up Up Up Up Up Up Up Escape");
+fn any_other_key_ends_the_box_but_keeps_the_selection() {
+    let mut e = Editor::new(song3());
+    let mut k = km();
+    drive_with(&mut e, &mut k, "Shift+Right Shift+Up Shift+Up Shift+Up Shift+Up");
+    assert_eq!(ids(&e), vec![1, 2]);
+    assert!(e.box_anchor.is_some());
+    drive_with(&mut e, &mut k, "]");
+    assert_eq!(e.box_anchor, None, "an edit ends the box");
+    assert_eq!(ids(&e), vec![1, 2], "but the selection stays");
+    assert_eq!(durations(&e), vec![2 * G, 3 * G, G]);
+    // the next Shift+arrow starts a fresh box at the cursor, replacing the selection
+    let ev = drive_with(&mut e, &mut k, "Shift+Right");
+    assert_eq!(e.box_anchor, Some(Cursor { tick: Tick(G), pitch: 64 }));
+    assert_eq!(ids(&e), vec![2]);
+    assert_eq!(status(&ev), vec!["1 in box"]);
+    // non-edits end the box too
+    let e = drive(song3(), &km(), "Shift+Right Shift+Up Shift+Up Shift+Up Shift+Up Space");
+    assert_eq!(e.box_anchor, None);
+    assert_eq!(ids(&e), vec![1, 2]);
+}
+
+#[test]
+fn escape_clears_box_selection() {
+    let mut e = Editor::new(song3());
+    let mut k = km();
+    drive_with(&mut e, &mut k, "4 Shift+Right 7 Shift+Up");
+    assert_eq!(ids(&e), vec![1, 2, 3]);
+    let ev = drive_with(&mut e, &mut k, "Escape");
     assert_eq!(e.mode, Mode::Normal);
     assert!(e.selection.is_empty());
-    assert_eq!(e.select_anchor, None);
+    assert_eq!(e.box_anchor, None);
+    assert_eq!(status(&ev), vec!["selection cleared"]);
 }
 
 #[test]
-fn select_mode_box_works_backwards() {
-    let e = drive(song3(), &km(), "Shift+Right Shift+Up v Shift+Left Shift+Down Enter");
+fn box_select_works_backwards() {
+    let mut e = Editor::new(song3());
+    let mut k = km();
+    let ev = drive_with(&mut e, &mut k, "Cmd+Right Cmd+Up Cmd+Shift+Left");
+    assert!(e.selection.is_empty(), "nothing at C5 in the first bar");
+    assert_eq!(last_status(&ev), "0 in box");
+    drive_with(&mut e, &mut k, "Cmd+Shift+Down");
     assert_eq!(ids(&e), vec![1, 2, 3]);
+    assert_eq!(e.cursor, Editor::new(song3()).cursor);
+}
+
+#[test]
+fn extend_by_bar_and_octave() {
+    let mut e = Editor::new(chords());
+    let mut k = km();
+    let ev = drive_with(&mut e, &mut k, "Cmd+Shift+Right");
+    assert_eq!(e.cursor.tick, Tick(3840));
+    assert_eq!(ids(&e), vec![1], "only C4 lies on the cursor pitch in the box");
+    assert_eq!(status(&ev), vec!["1 in box"]);
+    let ev = drive_with(&mut e, &mut k, "Cmd+Shift+Up");
+    assert_eq!(e.cursor.pitch, 72);
+    assert_eq!(ids(&e), vec![1, 2, 3, 4, 5, 6, 7, 8], "E5 starts one step past the bar line");
+    assert_eq!(status(&ev), vec!["8 in box"]);
+    drive_with(&mut e, &mut k, "Ctrl+Shift+Right 4 Shift+Up");
+    assert_eq!(e.selection.len(), 9);
+    assert_eq!(e.box_anchor, Some(Editor::new(chords()).cursor));
+}
+
+#[test]
+fn box_select_in_other_tracks_uses_their_notes() {
+    let mut song = Song::new_empty();
+    song.add_track(Track::new("B"));
+    let n = song.new_note(Tick(0), Tick(G), 60, 100);
+    song.tracks[1].insert_note(n);
+    let e = drive(song, &km(), "t Shift+Right");
+    assert_eq!(e.selection, [n.id].into_iter().collect::<BTreeSet<NoteId>>());
 }
 
 #[test]
@@ -399,34 +538,30 @@ fn select_all_and_clear() {
     let ev = drive_with(&mut e, &mut k, "Escape");
     assert!(e.selection.is_empty());
     assert_eq!(status(&ev), vec!["selection cleared"]);
-    // in Select mode `a` selects everything too
-    drive_with(&mut e, &mut k, "v a Enter");
+    drive_with(&mut e, &mut k, "Cmd+a");
     assert_eq!(ids(&e), vec![1, 2, 3]);
 }
 
-// ---------------------------------------------------------------- move mode
+// ---------------------------------------------------------------- move selected
 
 #[test]
-fn move_mode_moves_selected_notes_in_time() {
+fn alt_arrows_move_selected_notes_in_time() {
     let mut e = Editor::new(song3());
     let mut k = km();
-    let ev = drive_with(&mut e, &mut k, "a m");
-    assert_eq!(e.mode, Mode::Move);
-    assert!(ev.contains(&EditorEvent::ModeChanged(Mode::Move)));
-    let ev = drive_with(&mut e, &mut k, "Right");
+    drive_with(&mut e, &mut k, "a");
+    let ev = drive_with(&mut e, &mut k, "Alt+Right");
+    assert_eq!(e.mode, Mode::Normal);
     assert_eq!(starts(&e), vec![G, 2 * G, 5 * G]);
     assert_eq!(e.cursor.tick, Tick(G), "cursor follows the notes");
+    assert_eq!(ids(&e), vec![1, 2, 3], "the notes stay selected");
     assert_eq!(auditioned(&ev), 3);
     assert_eq!(status(&ev), vec!["moved 3 notes +1 grid step"]);
-    drive_with(&mut e, &mut k, "Shift+Right Ctrl+Left");
+    // a bar right, a beat left
+    drive_with(&mut e, &mut k, "Alt+Shift+Right Ctrl+Alt+Left");
     assert_eq!(starts(&e), vec![G + 3840 - 960, 2 * G + 3840 - 960, 5 * G + 3840 - 960]);
-    let ev = drive_with(&mut e, &mut k, "Escape");
-    assert_eq!(e.mode, Mode::Normal);
-    assert_eq!(ids(&e), vec![1, 2, 3], "leaving Move keeps the selection");
-    assert!(ev.contains(&EditorEvent::ModeChanged(Mode::Normal)));
-    // Enter leaves Move mode too
-    let e = drive(song3(), &km(), "m Enter");
-    assert_eq!(e.mode, Mode::Normal);
+    assert_eq!(e.cursor.tick, Tick(G + 3840 - 960));
+    assert_eq!(ids(&e), vec![1, 2, 3]);
+    assert_eq!(e.box_anchor, None);
 }
 
 #[test]
@@ -434,15 +569,17 @@ fn move_selected_clamps_at_song_start_as_a_group() {
     let mut e = Editor::new(song3());
     let mut k = km();
     // a note at tick 0 is selected: nothing can move left at all
-    drive_with(&mut e, &mut k, "a m");
+    drive_with(&mut e, &mut k, "a");
     let before = e.song.clone();
-    let err = try_drive_with(&mut e, &mut k, "Shift+Left").unwrap_err();
+    let err = try_drive_with(&mut e, &mut k, "Alt+Shift+Left").unwrap_err();
     assert!(matches!(err, DriveError::Edit { source: EditError::OutOfRange(_), .. }));
     assert_eq!(e.song, before);
     assert_eq!(e.undo.undo_depth(), 0);
-    // group clamp: select E4@240 and G4@960, move left 3 steps -> limited to 1 step
+    // group clamp: box E4@240 and G4@960, move left 3 steps -> limited to 1 step
     let mut e = Editor::new(song3());
-    drive_with(&mut e, &mut k, "Right Up Up Up Up s Right Right Right Up Up Up s m 3 Left");
+    drive_with(&mut e, &mut k, "Right Up Up Up Up Shift+Right Shift+Right Shift+Right Shift+Up Shift+Up Shift+Up");
+    assert_eq!(ids(&e), vec![2, 3]);
+    drive_with(&mut e, &mut k, "3 Alt+Left");
     assert_eq!(starts(&e), vec![0, 0, 3 * G]);
     assert_eq!(pitches(&e), vec![60, 64, 67]);
 }
@@ -451,23 +588,24 @@ fn move_selected_clamps_at_song_start_as_a_group() {
 fn move_selected_in_pitch_and_clamps_as_a_group() {
     let mut e = Editor::new(song3());
     let mut k = km();
-    let ev = drive_with(&mut e, &mut k, "a m Up");
+    let ev = drive_with(&mut e, &mut k, "a Alt+Up");
     assert_eq!(pitches(&e), vec![61, 65, 68]);
     assert_eq!(e.cursor.pitch, 61);
     assert_eq!(last_status(&ev), "moved 3 notes +1 st");
-    drive_with(&mut e, &mut k, "Shift+Down");
+    drive_with(&mut e, &mut k, "Alt+Shift+Down");
     assert_eq!(pitches(&e), vec![49, 53, 56]);
     // 9 octaves up would push G4 past 127: everything moves by the same clamped amount
-    drive_with(&mut e, &mut k, "9 Shift+Up");
+    drive_with(&mut e, &mut k, "9 Alt+Shift+Up");
     assert_eq!(pitches(&e), vec![120, 124, 127]);
-    let err = try_drive_with(&mut e, &mut k, "Up").unwrap_err();
+    let err = try_drive_with(&mut e, &mut k, "Alt+Up").unwrap_err();
     assert!(matches!(err, DriveError::Edit { source: EditError::OutOfRange(_), .. }));
 }
 
 #[test]
 fn move_selected_falls_back_to_note_under_cursor() {
-    let e = drive(song3(), &km(), "m Right Right");
+    let e = drive(song3(), &km(), "Alt+Right Alt+Right");
     assert_eq!(starts(&e), vec![G, 2 * G, 4 * G]);
+    assert_eq!(e.cursor.tick, Tick(2 * G));
 }
 
 #[test]
@@ -475,15 +613,15 @@ fn repeated_moves_coalesce_into_one_undo_step() {
     let mut e = Editor::new(song3());
     let mut k = km();
     let before = e.song.clone();
-    drive_with(&mut e, &mut k, "a m Right Right Up Up");
+    drive_with(&mut e, &mut k, "a Alt+Right Alt+Right Alt+Up Alt+Up");
     assert_eq!(e.undo.undo_depth(), 1);
     drive_with(&mut e, &mut k, "u");
     assert_eq!(e.song, before);
-    // redo ends the run (depth 2 after the next move); leaving Move mode and coming
-    // back starts another step (depth 3)
-    drive_with(&mut e, &mut k, "Shift+u Right");
+    // redo ends the run (depth 2 after the next move); any non-edit in between starts
+    // another step (depth 3)
+    drive_with(&mut e, &mut k, "Shift+u Alt+Right");
     assert_eq!(e.undo.undo_depth(), 2);
-    drive_with(&mut e, &mut k, "Escape m Right");
+    drive_with(&mut e, &mut k, "Escape Alt+Right");
     assert_eq!(e.undo.undo_depth(), 3);
 }
 
@@ -508,8 +646,8 @@ fn change_length() {
     assert_eq!(e.undo.undo_depth(), 1);
     drive_with(&mut e, &mut k, "u");
     assert_eq!(e.song, song3());
-    // works in Move mode on the selection
-    let e = drive(song3(), &km(), "a m ] ]");
+    // on a selection
+    let e = drive(song3(), &km(), "a ] ]");
     assert!(e.track().unwrap().notes.iter().all(|n| n.duration >= Tick(3 * G)));
 }
 
@@ -529,8 +667,8 @@ fn nudge_velocity() {
     assert_eq!(e.undo.undo_depth(), 1, "one coalesced undo step for the whole run");
     drive_with(&mut e, &mut k, "u");
     assert!(e.track().unwrap().notes.iter().all(|n| n.velocity == 100));
-    // in Move mode too
-    let e = drive(song3(), &km(), "m -");
+    // nothing selected: the note under the cursor
+    let e = drive(song3(), &km(), "-");
     assert_eq!(e.track().unwrap().notes[0].velocity, 95);
 }
 
@@ -552,21 +690,35 @@ fn set_velocity_is_a_command_without_a_default_binding() {
 
 #[test]
 fn transpose_selected() {
+    // no default key: the command line's `t 12`
+    assert_eq!(cmdline::parse("t 12").unwrap(), Command::TransposeSelected { semitones: 12 });
+    assert_eq!(cmdline::parse("transpose -1").unwrap(), Command::TransposeSelected { semitones: -1 });
+    let up = Command::TransposeSelected { semitones: 1 };
+    let down = Command::TransposeSelected { semitones: -1 };
+    let octave_up = Command::TransposeSelected { semitones: 12 };
+    let octave_down = Command::TransposeSelected { semitones: -12 };
     let mut e = Editor::new(song3());
     let mut k = km();
-    let ev = drive_with(&mut e, &mut k, "a Ctrl+Up");
+    drive_with(&mut e, &mut k, "a");
+    let ev = e.execute(&cmdline::parse("t 12").unwrap(), None).unwrap();
     assert_eq!(pitches(&e), vec![72, 76, 79]);
     assert_eq!(auditioned(&ev), 3);
     assert_eq!(last_status(&ev), "transposed 3 notes +12 st");
-    drive_with(&mut e, &mut k, "Alt+Down Alt+Down 2 Alt+Up");
+    assert_eq!(e.last_edit, Some(octave_up.clone()));
+    e.execute(&down, None).unwrap();
+    e.execute(&down, None).unwrap();
+    e.execute(&up, Some(2)).unwrap();
     assert_eq!(pitches(&e), vec![72, 76, 79]);
-    drive_with(&mut e, &mut k, "9 Ctrl+Up");
+    e.execute(&octave_up, Some(9)).unwrap();
     assert_eq!(pitches(&e), vec![120, 124, 127], "group clamp keeps the chord shape");
-    let err = try_drive_with(&mut e, &mut k, "Ctrl+Up").unwrap_err();
-    assert!(matches!(err, DriveError::Edit { source: EditError::OutOfRange(_), .. }));
-    drive_with(&mut e, &mut k, "9 Ctrl+Down 9 Ctrl+Down");
+    assert!(matches!(e.execute(&octave_up, None), Err(EditError::OutOfRange(_))));
+    e.execute(&octave_down, Some(9)).unwrap();
+    e.execute(&octave_down, Some(9)).unwrap();
     assert_eq!(pitches(&e), vec![0, 4, 7]);
     assert_eq!(e.cursor.pitch, 60, "transpose does not move the cursor");
+    assert_eq!(e.undo.undo_depth(), 1, "transposes coalesce");
+    drive_with(&mut e, &mut k, "u");
+    assert_eq!(e.song, song3());
 }
 
 // ---------------------------------------------------------------- clipboard
@@ -581,7 +733,7 @@ fn copy_paste() {
     assert_eq!(last_status(&ev), "copied 3 notes");
     assert_eq!(e.undo.undo_depth(), 0, "copy is not an edit");
     // paste at bar 2 with the original pitches
-    let ev = drive_with(&mut e, &mut k, "Shift+Right p");
+    let ev = drive_with(&mut e, &mut k, "Cmd+Right p");
     assert_eq!(e.track().unwrap().notes.len(), 6);
     assert_eq!(starts(&e), vec![0, G, 4 * G, 3840, 3840 + G, 3840 + 4 * G]);
     assert_eq!(pitches(&e), vec![60, 64, 67, 60, 64, 67]);
@@ -591,13 +743,45 @@ fn copy_paste() {
     assert!(has_song_changed(&ev));
     assert_eq!(e.last_edit, Some(Command::Paste));
     // copy with nothing selected uses the note under the cursor
-    let e = drive(song3(), &km(), "c Shift+Right p");
+    let e = drive(song3(), &km(), "c Cmd+Right p");
     assert_eq!(starts(&e), vec![0, G, 4 * G, 3840]);
 }
 
 #[test]
+fn cut_is_copy_plus_delete_in_one_undo_step() {
+    let mut e = Editor::new(song3());
+    let mut k = km();
+    let ev = drive_with(&mut e, &mut k, "a Cmd+x");
+    assert!(e.track().unwrap().notes.is_empty());
+    assert!(e.selection.is_empty());
+    assert_eq!(e.clipboard.len(), 3);
+    assert_eq!(e.clipboard[0].start, Tick::ZERO);
+    assert!(has_song_changed(&ev));
+    assert_eq!(last_status(&ev), "cut 3 notes");
+    assert_eq!(e.undo.undo_depth(), 1);
+    assert_eq!(e.last_edit, Some(Command::Cut));
+    drive_with(&mut e, &mut k, "p");
+    assert_eq!(starts(&e), vec![0, G, 4 * G]);
+    assert_eq!(pitches(&e), vec![60, 64, 67]);
+    assert_eq!(ids(&e), vec![4, 5, 6], "pasted notes are fresh and selected");
+    drive_with(&mut e, &mut k, "u");
+    assert!(e.track().unwrap().notes.is_empty(), "the first undo takes back the paste");
+    drive_with(&mut e, &mut k, "u");
+    assert_eq!(e.song, song3(), "the second takes back the cut");
+    // nothing selected: the note under the cursor; nothing there is an error
+    let e = drive(song3(), &km(), "Cmd+x");
+    assert_eq!(starts(&e), vec![G, 4 * G]);
+    assert_eq!(e.clipboard.len(), 1);
+    let mut e = Editor::new(song3());
+    let err = try_drive_with(&mut e, &mut k, "Up Cmd+x").unwrap_err();
+    assert_eq!(err, DriveError::Edit { key: "Cmd+x".into(), source: EditError::NothingSelected });
+    assert!(e.clipboard.is_empty(), "a failed cut leaves the clipboard alone");
+    assert_eq!(cmdline::parse("cut").unwrap(), Command::Cut);
+}
+
+#[test]
 fn paste_count_repeats_back_to_back_and_replaces_overlaps() {
-    let e = drive(song3(), &km(), "a c Shift+Right 2 p");
+    let e = drive(song3(), &km(), "a c Cmd+Right 2 p");
     // clip spans 0..1200 (end of G4 at 960+240); second copy starts at 3840+1200
     assert_eq!(starts(&e), vec![0, G, 4 * G, 3840, 3840 + G, 3840 + 4 * G, 5040, 5040 + G, 5040 + 4 * G]);
     assert_eq!(e.selection.len(), 6);
@@ -643,7 +827,8 @@ fn undo_restores_song_cursor_and_selection() {
     let mut e = Editor::new(song3());
     let mut k = km();
     let before = e.song.clone();
-    drive_with(&mut e, &mut k, "Right Up Up Up Up s c Shift+Right");
+    drive_with(&mut e, &mut k, "Right Up Up Up Up s c Cmd+Right Shift+b");
+    assert_eq!(ids(&e), vec![1, 2, 3]);
     let cursor = e.cursor;
     let selection = e.selection.clone();
     drive_with(&mut e, &mut k, "p");
@@ -683,14 +868,17 @@ fn undo_count_and_every_edit_is_undoable() {
     let before = song3();
     let mut e = Editor::new(before.clone());
     let mut k = km();
-    drive_with(&mut e, &mut k, "n Right n x a ] = Ctrl+Up c Shift+Right p d m Right Up Escape");
+    drive_with(&mut e, &mut k, "n Right n x a ] = c Cmd+Right p d Alt+Right Alt+Up Cmd+x");
+    e.execute(&Command::TransposeSelected { semitones: 12 }, None).unwrap_err();
+    drive_with(&mut e, &mut k, "p");
+    e.execute(&Command::TransposeSelected { semitones: 12 }, None).unwrap();
     assert_ne!(e.song, before);
     let depth = e.undo.undo_depth();
-    assert!(depth >= 8, "{depth}");
-    drive_with(&mut e, &mut k, &format!("{depth} u"));
+    assert!(depth >= 10, "{depth}");
+    drive_with(&mut e, &mut k, &counted(depth, "u"));
     assert_eq!(e.song, before);
     assert!(!e.undo.can_undo());
-    drive_with(&mut e, &mut k, &format!("{depth} Shift+u"));
+    drive_with(&mut e, &mut k, &counted(depth, "Shift+u"));
     assert!(!e.undo.can_redo());
     // a count larger than the history undoes what it can
     drive_with(&mut e, &mut k, "9 9 u");
@@ -699,7 +887,7 @@ fn undo_count_and_every_edit_is_undoable() {
 
 #[test]
 fn non_edits_are_not_undoable() {
-    let e = drive(song3(), &km(), "Right Up Up Up Up s v Right Enter a Escape g t m Escape c");
+    let e = drive(song3(), &km(), "Right Up Up Up Up s Shift+Right Escape a Escape g t c Cmd+Right Space Shift+/");
     assert_eq!(e.undo.undo_depth(), 0);
     assert!(e.last_edit.is_none());
 }
@@ -759,30 +947,6 @@ fn next_and_prev_track() {
 }
 
 #[test]
-fn enter_mode_command_line() {
-    let mut e = Editor::new(Song::new_empty());
-    let ev = e.execute(&Command::EnterMode { mode: Mode::CommandLine }, None).unwrap();
-    assert_eq!(e.mode, Mode::CommandLine);
-    assert_eq!(ev, vec![EditorEvent::ModeChanged(Mode::CommandLine)]);
-    let ev = e.execute(&Command::EnterMode { mode: Mode::CommandLine }, None).unwrap();
-    assert!(ev.is_empty(), "no event when the mode does not change");
-    // keys fed in CommandLine mode are not bindings
-    let mut k = km();
-    let err = try_drive_with(&mut e, &mut k, "n").unwrap_err();
-    assert!(matches!(err, DriveError::Unbound { .. }));
-}
-
-#[test]
-fn select_mode_in_other_tracks_uses_their_notes() {
-    let mut song = Song::new_empty();
-    song.add_track(Track::new("B"));
-    let n = song.new_note(Tick(0), Tick(G), 60, 100);
-    song.tracks[1].insert_note(n);
-    let e = drive(song, &km(), "t v Enter");
-    assert_eq!(e.selection, [n.id].into_iter().collect::<BTreeSet<NoteId>>());
-}
-
-#[test]
 fn direct_execute_matches_driving() {
     let mut a = Editor::new(song3());
     a.execute(&Command::MoveCursor { dir: Dir::Right, unit: Unit::Grid }, Some(3)).unwrap();
@@ -790,67 +954,6 @@ fn direct_execute_matches_driving() {
     let b = drive(song3(), &km(), "3 Right n");
     assert_eq!(a.song, b.song);
     assert_eq!(a.cursor, b.cursor);
-}
-
-// ---------------------------------------------------------------- select modes
-
-#[test]
-fn time_select_spans_all_pitches() {
-    let mut e = Editor::new(chords());
-    let mut k = km();
-    let ev = drive_with(&mut e, &mut k, "Shift+v");
-    assert_eq!(e.mode, Mode::Select);
-    assert!(e.select_all_pitches);
-    assert!(ev.contains(&EditorEvent::ModeChanged(Mode::Select)));
-    assert_eq!(ids(&e), vec![1, 2, 3], "the anchor cell already covers the whole chord at tick 0");
-    assert_eq!(last_status(&ev), "time select: 3 notes in range");
-    drive_with(&mut e, &mut k, "Ctrl+Right");
-    assert_eq!(ids(&e), vec![1, 2, 3, 4]);
-    let ev = drive_with(&mut e, &mut k, "Shift+Right");
-    assert_eq!(ids(&e), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
-    assert_eq!(last_status(&ev), "9 notes in box");
-    drive_with(&mut e, &mut k, "Enter");
-    assert_eq!(e.mode, Mode::Normal);
-    assert!(!e.select_all_pitches, "flag resets on leaving Select");
-    assert_eq!(e.selection.len(), 9);
-    // Escape cancels
-    let e = drive(chords(), &km(), "Shift+v Ctrl+Right Escape");
-    assert!(e.selection.is_empty());
-    assert!(!e.select_all_pitches);
-    assert_eq!(e.undo.undo_depth(), 0);
-}
-
-#[test]
-fn subtract_select_removes_from_the_selection_and_escape_restores() {
-    let mut e = Editor::new(chords());
-    let mut k = km();
-    drive_with(&mut e, &mut k, "v Shift+Right Shift+Right Shift+Up Shift+Up");
-    assert_eq!(e.selection.len(), 9);
-    let ev = drive_with(&mut e, &mut k, "-");
-    assert!(e.select_subtract);
-    assert_eq!(e.select_base.len(), 9);
-    assert_eq!(e.select_anchor, Some(e.cursor));
-    assert_eq!(e.selection.len(), 9, "the cursor cell is empty, nothing removed yet");
-    assert_eq!(last_status(&ev), "subtract box: 9 notes selected");
-    let ev = drive_with(&mut e, &mut k, "Shift+Left Shift+Down");
-    assert_eq!(ids(&e), vec![1, 2, 3, 4, 5, 6, 7], "C5 and E5 removed");
-    assert_eq!(last_status(&ev), "7 notes selected");
-    drive_with(&mut e, &mut k, "Escape");
-    assert_eq!(e.mode, Mode::Normal);
-    assert_eq!(e.selection.len(), 9, "Escape puts the subtracted notes back");
-    assert!(!e.select_subtract);
-    assert!(e.select_base.is_empty());
-    // Enter keeps the thinned selection
-    let e = drive(chords(), &km(), "v Shift+Right Shift+Right Shift+Up Shift+Up - Shift+Left Shift+Down Enter");
-    assert_eq!(ids(&e), vec![1, 2, 3, 4, 5, 6, 7]);
-    assert!(!e.select_subtract);
-    assert_eq!(e.mode, Mode::Normal);
-    // from Normal mode it starts from the current selection
-    let mut e = Editor::new(chords());
-    drive_with(&mut e, &mut k, "a");
-    e.execute(&Command::EnterSubtractSelect, None).unwrap();
-    drive_with(&mut e, &mut k, "Up Up Up Up Up Up Up Enter");
-    assert_eq!(ids(&e), vec![4, 5, 6, 7, 8, 9]);
 }
 
 // ---------------------------------------------------------------- select by unit
@@ -862,14 +965,15 @@ fn select_bar() {
     let ev = drive_with(&mut e, &mut k, "b");
     assert_eq!(ids(&e), vec![1, 2, 3, 4, 5, 6, 7]);
     assert_eq!(last_status(&ev), "selected 7 notes in bar 1");
-    let ev = drive_with(&mut e, &mut k, "Shift+Right b");
+    let ev = drive_with(&mut e, &mut k, "Cmd+Right b");
     assert_eq!(ids(&e), vec![8, 9]);
     assert_eq!(last_status(&ev), "selected 2 notes in bar 2");
-    let ev = drive_with(&mut e, &mut k, "Shift+Left 2 b");
+    let ev = drive_with(&mut e, &mut k, "Cmd+Left 2 b");
     assert_eq!(e.selection.len(), 9);
     assert_eq!(last_status(&ev), "selected 9 notes in bars 1-2");
     // an empty bar is an error and keeps the selection
-    let err = try_drive_with(&mut e, &mut k, "Shift+Right Shift+Right b").unwrap_err();
+    drive_with(&mut e, &mut k, "Cmd+Right Cmd+Right a");
+    let err = try_drive_with(&mut e, &mut k, "b").unwrap_err();
     no_match(err);
     assert_eq!(e.selection.len(), 9);
     assert_eq!(e.undo.undo_depth(), 0);
@@ -886,9 +990,12 @@ fn select_chord() {
     let ev = drive_with(&mut e, &mut k, "Ctrl+Right Shift+s");
     assert_eq!(ids(&e), vec![4]);
     assert_eq!(last_status(&ev), "selected 1 note in the chord at 1:2:000");
-    let err = try_drive_with(&mut e, &mut k, "Right Shift+s").unwrap_err();
+    // an empty tick is an error and keeps the selection
+    drive_with(&mut e, &mut k, "Right Shift+b");
+    assert_eq!(ids(&e), vec![1, 2, 3, 4]);
+    let err = try_drive_with(&mut e, &mut k, "Shift+s").unwrap_err();
     no_match(err);
-    assert_eq!(ids(&e), vec![4]);
+    assert_eq!(ids(&e), vec![1, 2, 3, 4]);
 }
 
 #[test]
@@ -900,9 +1007,12 @@ fn select_next_notes_to_end_and_to_start() {
     assert_eq!(last_status(&ev), "selected 4 notes from the cursor on");
     drive_with(&mut e, &mut k, "Ctrl+Right 2 w");
     assert_eq!(ids(&e), vec![4, 5]);
-    let err = try_drive_with(&mut e, &mut k, "Shift+Right Shift+Right w").unwrap_err();
+    // nothing after bar 3 is an error and keeps the selection
+    drive_with(&mut e, &mut k, "Cmd+Right Cmd+Right Shift+b");
+    assert_eq!(e.selection.len(), 9);
+    let err = try_drive_with(&mut e, &mut k, "w").unwrap_err();
     no_match(err);
-    assert_eq!(ids(&e), vec![4, 5]);
+    assert_eq!(e.selection.len(), 9);
     let e = drive(chords(), &km(), "Ctrl+Right Ctrl+Right Shift+e");
     assert_eq!(ids(&e), vec![5, 6, 7, 8, 9]);
     let mut e = Editor::new(chords());
@@ -955,9 +1065,10 @@ fn invert_selection() {
     assert_eq!(e.selection.len(), 9);
     drive_with(&mut e, &mut k, "Escape s i");
     assert_eq!(ids(&e), vec![2, 3, 4, 5, 6, 7, 8, 9]);
-    // in Select mode too
-    let e = drive(chords(), &km(), "v i Enter");
+    // inverting a box selection ends the box
+    let e = drive(chords(), &km(), "Shift+Right i");
     assert_eq!(e.selection.len(), 8);
+    assert_eq!(e.box_anchor, None);
 }
 
 // ---------------------------------------------------------------- focus
@@ -1005,10 +1116,11 @@ fn tab_steps_through_the_selection_and_drops_the_focused_note() {
     assert!(e.selection.is_empty());
     assert_eq!(e.focus, None);
     assert_eq!(last_status(&ev), "dropped C4; 0 notes selected");
-    // Select mode: Tab / x
-    let e = drive(chords(), &km(), "v Up Up Up Up Up Up Up Tab Tab x Enter");
+    // focus works on a box selection and ends the box
+    let e = drive(chords(), &km(), "7 Shift+Up Tab Tab Shift+x");
     assert_eq!(ids(&e), vec![1, 3]);
-    assert_eq!(e.focus, Some(NoteId(3)), "confirming keeps the focus");
+    assert_eq!(e.focus, Some(NoteId(3)));
+    assert_eq!(e.box_anchor, None);
 }
 
 #[test]
@@ -1020,8 +1132,8 @@ fn focus_errors_and_clears_when_the_selection_changes() {
     let err = try_drive_with(&mut e, &mut k, "a Shift+x").unwrap_err();
     assert_eq!(err, DriveError::Edit { key: "Shift+x".into(), source: EditError::NothingFocused });
     drive_with(&mut e, &mut k, "Tab Right");
-    assert_eq!(e.focus, Some(NoteId(1)), "a cursor move keeps the focus");
-    drive_with(&mut e, &mut k, "Left s");
+    assert_eq!(e.focus, None, "a cursor move clears the selection, and the focus with it");
+    drive_with(&mut e, &mut k, "Left a Tab s");
     assert_eq!(e.focus, None, "toggling a note changes the selection: focus cleared");
     drive_with(&mut e, &mut k, "a Tab b");
     assert_eq!(e.focus, None);
@@ -1054,13 +1166,14 @@ fn keep_filters_thin_the_selection() {
     assert_eq!(ids(&drive(chords(), &k, "a f o")), vec![1, 2, 3, 4, 5, 6, 8]);
     assert_eq!(ids(&drive(chords(), &k, "a f Shift+o")), vec![7, 9]);
     assert_eq!(ids(&drive(chords(), &k, "a f a")), vec![2, 3, 4, 5, 6, 7, 8, 9]);
-    assert_eq!(ids(&drive(chords(), &k, "Shift+Up a f l")), vec![1, 2, 3, 4, 5, 6, 7]);
+    assert_eq!(ids(&drive(chords(), &k, "Cmd+Up a f l")), vec![1, 2, 3, 4, 5, 6, 7]);
     assert_eq!(ids(&drive(chords(), &k, "Ctrl+Right a f Shift+a")), vec![4, 5, 6, 7, 8, 9]);
     assert_eq!(ids(&drive(chords(), &k, "Ctrl+Right a f Shift+b")), vec![1, 2, 3]);
-    // filters chain, work in Select mode, and are not edits
-    let e = drive(chords(), &k, "v Shift+Right Shift+Right Shift+Up Shift+Up f o f t Enter");
+    // filters chain, work on a box selection, and are not edits
+    let e = drive(chords(), &k, "Cmd+Shift+Right Cmd+Shift+Right Cmd+Shift+Up Cmd+Shift+Up f o f t");
     assert_eq!(ids(&e), vec![3, 4, 6, 8]);
     assert_eq!(e.undo.undo_depth(), 0);
+    assert_eq!(e.box_anchor, None);
     // a filter that would keep nothing is an error and keeps the selection
     let mut e = Editor::new(chords());
     drive_with(&mut e, &mut km2, "a");
@@ -1224,27 +1337,27 @@ fn nudge_selected_moves_off_grid_and_coalesces() {
     let mut e = Editor::new(song3());
     let mut k = km();
     let before = e.song.clone();
-    let ev = drive_with(&mut e, &mut k, "Alt+Right");
+    let ev = drive_with(&mut e, &mut k, "Alt+.");
     assert_eq!(starts(&e), vec![10, G, 4 * G]);
     assert_eq!(e.cursor.tick, Tick::ZERO, "the cursor stays on the grid");
     assert_eq!(auditioned(&ev), 1);
     assert_eq!(last_status(&ev), "nudged 1 note +10 ticks");
     assert_eq!(e.last_edit, Some(Command::NudgeSelected { ticks: 10 }));
-    let ev = drive_with(&mut e, &mut k, "Right Up Up Up Up Alt+Right");
+    let ev = drive_with(&mut e, &mut k, "Right Up Up Up Up Alt+.");
     assert_eq!(starts(&e), vec![10, G + 10, 4 * G]);
     assert_eq!(auditioned(&ev), 1);
     // count multiplies and the group clamps at tick 0
-    let ev = drive_with(&mut e, &mut k, "a 3 Alt+Left");
+    let ev = drive_with(&mut e, &mut k, "a 3 Alt+,");
     assert_eq!(starts(&e), vec![0, G, 4 * G - 10]);
     assert_eq!(last_status(&ev), "nudged 3 notes -10 ticks");
-    let err = try_drive_with(&mut e, &mut k, "Alt+Left").unwrap_err();
+    let err = try_drive_with(&mut e, &mut k, "Alt+,").unwrap_err();
     assert!(matches!(err, DriveError::Edit { source: EditError::OutOfRange(_), .. }));
     assert_eq!(e.undo.undo_depth(), 3, "cursor moves and selection changes break coalescing");
     drive_with(&mut e, &mut k, "3 u");
     assert_eq!(e.song, before);
-    // in Move mode on the selection, repeated nudges are one undo step
+    // repeated nudges on the same selection are one undo step
     let mut e = Editor::new(song3());
-    drive_with(&mut e, &mut k, "a m Alt+Right Alt+Right Alt+Left");
+    drive_with(&mut e, &mut k, "a Alt+. Alt+. Alt+,");
     assert_eq!(starts(&e), vec![10, G + 10, 4 * G + 10]);
     assert_eq!(e.undo.undo_depth(), 1);
 }
@@ -1311,9 +1424,9 @@ fn repeat_last_edit() {
     assert_eq!(durations(&e)[4], 2 * G);
     assert_eq!(e.last_edit_count, Some(2), "the override becomes the new count");
     // works for every editing command, e.g. a length change on another note
-    drive_with(&mut e, &mut k, "Shift+Right n ] ]");
+    drive_with(&mut e, &mut k, "Cmd+Right n ] ]");
     assert_eq!(e.undo.undo_depth(), 7, "the two `]` coalesce");
-    drive_with(&mut e, &mut k, "Shift+Left Escape .");
+    drive_with(&mut e, &mut k, "Cmd+Left Escape .");
     assert_eq!(e.last_edit, Some(Command::ChangeLength { delta_steps: 1 }));
     assert_eq!(durations(&e)[4], 3 * G, "`]` repeated on the note under the cursor");
     assert_eq!(e.undo.undo_depth(), 8);
@@ -1325,7 +1438,7 @@ fn repeat_last_edit() {
     assert_eq!(starts(&e), vec![4 * G]);
     // non-edits in between do not become the last edit
     let mut e = Editor::new(song3());
-    drive_with(&mut e, &mut k, "x Up Up Up Up Right v Right Enter a Escape t .");
+    drive_with(&mut e, &mut k, "x Up Up Up Up Right Shift+Right Escape a Escape t .");
     assert_eq!(starts(&e), vec![4 * G], "the repeat deleted a second note");
 }
 
@@ -1374,22 +1487,23 @@ fn transport_commands_only_emit_events() {
     let ev = drive_with(&mut e, &mut k, "Right Space");
     assert_eq!(ev, vec![EditorEvent::Transport(TransportRequest::Toggle { from: Tick(G) })]);
     let ev = drive_with(&mut e, &mut k, "Enter");
+    assert_eq!(
+        ev,
+        vec![EditorEvent::Transport(TransportRequest::Play { from: Tick::ZERO })],
+        "Enter plays from the top"
+    );
+    let ev = drive_with(&mut e, &mut k, "Shift+Enter");
     assert_eq!(ev, vec![EditorEvent::Transport(TransportRequest::Play { from: Tick(G) })]);
-    let ev = e.execute(&Command::Play, None).unwrap();
-    assert_eq!(ev, vec![EditorEvent::Transport(TransportRequest::Play { from: Tick::ZERO })]);
     let ev = e.execute(&Command::Stop, Some(5)).unwrap();
     assert_eq!(ev, vec![EditorEvent::Transport(TransportRequest::Stop)]);
     assert_eq!(e.song, song3());
     assert_eq!(e.undo.undo_depth(), 0);
     assert!(e.last_edit.is_none());
-    // Space works in every mode; Enter confirms in Select mode instead
-    let ev = drive_with(&mut e, &mut k, "v Space");
-    assert!(ev.contains(&EditorEvent::Transport(TransportRequest::Toggle { from: Tick(G) })));
-    let ev = drive_with(&mut e, &mut k, "Enter");
-    assert!(!ev.iter().any(|e| matches!(e, EditorEvent::Transport(_))));
-    assert_eq!(e.mode, Mode::Normal);
-    let ev = drive_with(&mut e, &mut k, "m Space Escape");
-    assert!(ev.contains(&EditorEvent::Transport(TransportRequest::Toggle { from: Tick(G) })));
+    // transport keys end a box in progress but keep what it selected
+    let ev = drive_with(&mut e, &mut k, "Shift+Left Space");
+    assert!(ev.contains(&EditorEvent::Transport(TransportRequest::Toggle { from: Tick::ZERO })));
+    assert_eq!(e.box_anchor, None);
+    assert_eq!(ids(&e), vec![1]);
 }
 
 #[test]
@@ -1397,7 +1511,7 @@ fn view_and_app_commands_only_emit_events() {
     let mut e = Editor::new(song3());
     let mut k = km();
     assert_eq!(drive_with(&mut e, &mut k, "Shift+/"), vec![EditorEvent::ToggleCheatSheet]);
-    assert_eq!(drive_with(&mut e, &mut k, "v Shift+/")[1..], [EditorEvent::ToggleCheatSheet]);
+    assert_eq!(drive_with(&mut e, &mut k, "Shift+Right Shift+/")[1..], [EditorEvent::ToggleCheatSheet]);
     drive_with(&mut e, &mut k, "Escape");
     assert_eq!(drive_with(&mut e, &mut k, "Cmd+="), vec![EditorEvent::View(ViewRequest::ZoomTime(ZOOM_TIME_STEP))]);
     assert_eq!(
@@ -1412,12 +1526,19 @@ fn view_and_app_commands_only_emit_events() {
     assert_eq!(ev, vec![EditorEvent::ModeChanged(Mode::CommandLine)]);
     assert_eq!(e.undo.undo_depth(), 0);
     assert!(e.last_edit.is_none());
-    // while in CommandLine mode the keymap is bypassed; the app parses text and executes
+    let ev = e.execute(&Command::EnterCommandLine, None).unwrap();
+    assert!(ev.is_empty(), "no event when the mode does not change");
+    // while in CommandLine mode the keymap is bypassed; the app parses text, executes
+    // it, and puts the mode back itself
     let err = try_drive_with(&mut e, &mut k, "n").unwrap_err();
-    assert!(matches!(err, DriveError::Unbound { .. }));
-    let cmd = cmdline::parse("mode normal").unwrap();
-    e.execute(&cmd, None).unwrap();
-    assert_eq!(e.mode, Mode::Normal);
+    assert_eq!(err, DriveError::Unbound { key: "n".into() });
+    assert!(
+        matches!(cmdline::parse("mode normal"), Err(crate::CmdLineError::UnknownCommand(_))),
+        "no mode command"
+    );
+    e.mode = Mode::Normal;
+    drive_with(&mut e, &mut k, "n");
+    assert_eq!(e.undo.undo_depth(), 1);
 }
 
 #[test]
@@ -1546,20 +1667,20 @@ fn duplicate_track_copies_notes_with_fresh_ids() {
 fn move_track_up_and_down_follows_the_track() {
     let mut e = Editor::new(three_tracks());
     let mut k = km();
-    let err = try_drive_with(&mut e, &mut k, "Cmd+Up").unwrap_err();
+    let err = try_drive_with(&mut e, &mut k, "Cmd+Alt+Up").unwrap_err();
     assert!(matches!(err, DriveError::Edit { source: EditError::OutOfRange(_), .. }), "{err:?}");
     assert_eq!(e.undo.undo_depth(), 0);
-    let ev = drive_with(&mut e, &mut k, "a Cmd+Down");
+    let ev = drive_with(&mut e, &mut k, "a Cmd+Alt+Down");
     assert_eq!(track_names(&e), vec!["Bass", "Track 1", "Drums"]);
     assert_eq!(e.track_index, 1, "the view follows the track");
     assert_eq!(ids(&e), vec![1, 2, 3], "same notes, selection kept");
     assert_eq!(last_status(&ev), "moved track down to 2/3: Track 1");
-    drive_with(&mut e, &mut k, "5 Cmd+Down");
+    drive_with(&mut e, &mut k, "5 Cmd+Alt+Down");
     assert_eq!(track_names(&e), vec!["Bass", "Drums", "Track 1"], "stops at the bottom");
     assert_eq!(e.track_index, 2);
-    let err = try_drive_with(&mut e, &mut k, "Cmd+Down").unwrap_err();
+    let err = try_drive_with(&mut e, &mut k, "Cmd+Alt+Down").unwrap_err();
     assert!(matches!(err, DriveError::Edit { source: EditError::OutOfRange(_), .. }));
-    drive_with(&mut e, &mut k, "Cmd+Up");
+    drive_with(&mut e, &mut k, "Cmd+Alt+Up");
     assert_eq!(track_names(&e), vec!["Bass", "Track 1", "Drums"]);
     assert_eq!(e.track_index, 1);
     drive_with(&mut e, &mut k, "3 u");
@@ -1736,7 +1857,7 @@ fn set_instrument_and_step_presets() {
         Err(EditError::BadValue("preset 128 is not 0-127".to_string()))
     );
     let depth = e.undo.undo_depth();
-    drive_with(&mut e, &mut k, &format!("{depth} u"));
+    drive_with(&mut e, &mut k, &counted(depth, "u"));
     assert_eq!(e.song, song3());
 }
 
@@ -1767,7 +1888,7 @@ fn track_edits_undo_all_the_way_back() {
     drive_with(
         &mut e,
         &mut k,
-        "t Cmd+t Ctrl+m Ctrl+s Ctrl+= Ctrl+] Ctrl+. Cmd+Up Cmd+d Cmd+Shift+t t Cmd+Up Ctrl+Shift+d Shift+c Ctrl+Shift+Down",
+        "t Cmd+t Ctrl+m Ctrl+s Ctrl+= Ctrl+] Ctrl+. Cmd+Alt+Up Cmd+d Cmd+Shift+t t Cmd+Alt+Up Ctrl+Shift+d Shift+c Ctrl+Shift+Down",
     );
     assert_ne!(e.song, before);
     assert_eq!(track_names(&e), vec!["Track 1", "Track 4", "Drums", "Bass"]);
@@ -1871,7 +1992,7 @@ fn set_and_nudge_lane_value_at_the_cursor() {
     assert_eq!(e.track().unwrap().lanes.pitch_bend.len(), 1);
     // repeat-last-edit replays a lane edit at the new cursor
     e.execute(&Command::ShowLane { kind: Some(LaneKind::ModWheel) }, None).unwrap();
-    drive_with(&mut e, &mut k, "Shift+Right");
+    drive_with(&mut e, &mut k, "Cmd+Right");
     e.execute(&Command::SetLaneValue { value: 64 }, None).unwrap();
     drive_with(&mut e, &mut k, "Right .");
     let mods: Vec<(u64, i32)> = e.track().unwrap().lanes.mod_wheel.iter().map(|p| (p.tick.get(), p.value)).collect();
@@ -1895,7 +2016,7 @@ fn ramp_lane_over_the_selection_the_note_or_a_bar() {
     assert_eq!(starts(&e), vec![0, G, 4 * G], "notes untouched");
     assert_eq!(ids(&e), vec![1, 2, 3], "selection kept");
     // no note, no selection: one bar from the cursor; points in the range are replaced
-    drive_with(&mut e, &mut k, "Escape Shift+Right");
+    drive_with(&mut e, &mut k, "Escape Cmd+Right");
     e.execute(&Command::SetLaneValue { value: 5 }, None).unwrap();
     drive_with(&mut e, &mut k, "Right");
     e.execute(&Command::SetLaneValue { value: 5 }, None).unwrap();
@@ -1908,7 +2029,7 @@ fn ramp_lane_over_the_selection_the_note_or_a_bar() {
     assert_eq!(s[22], (7680, 0));
     assert!(s.iter().all(|(t, v)| *t != 3840 + G || *v == 119), "the old point at the second step was replaced");
     let depth = e.undo.undo_depth();
-    drive_with(&mut e, &mut k, &format!("{depth} u"));
+    drive_with(&mut e, &mut k, &counted(depth, "u"));
     assert_eq!(e.song, song3());
     // volume lane clamps the ramp ends to 0..=127 (undo put the cursor back on C4@0)
     assert_eq!(e.cursor.tick, Tick::ZERO);
@@ -1926,8 +2047,8 @@ fn clear_lane_in_the_selection_range_or_everything() {
     drive_with(&mut e, &mut k, "Shift+c");
     set_sustain(&mut e, &[(0, 127), (G, 64), (3 * G, 0), (2000, 127)]);
     let with_points = e.song.clone();
-    // select C4 and E4 (0..=720): the point exactly at the selection's end goes too
-    let ev = drive_with(&mut e, &mut k, "s Right Up Up Up Up s Ctrl+Shift+x");
+    // box C4 and E4 (0..=720): the point exactly at the selection's end goes too
+    let ev = drive_with(&mut e, &mut k, "Shift+Right Shift+Up Shift+Up Shift+Up Shift+Up Ctrl+Shift+x");
     assert_eq!(sustain(&e), vec![(2000, 127)]);
     assert!(has_song_changed(&ev));
     assert_eq!(last_status(&ev), "cleared 3 sustain points in the selection");
@@ -1958,7 +2079,7 @@ fn sustain_down_up_and_pedal_selection() {
     assert_eq!(sustain(&e), vec![(0, 127)]);
     assert!(has_song_changed(&ev));
     assert_eq!(status(&ev), vec!["sustain 127 at 1:1:000"]);
-    let ev = drive_with(&mut e, &mut k, "Shift+Right Ctrl+Shift+u");
+    let ev = drive_with(&mut e, &mut k, "Cmd+Right Ctrl+Shift+u");
     assert_eq!(sustain(&e), vec![(0, 127), (3840, 0)]);
     assert_eq!(last_status(&ev), "sustain 0 at 2:1:000");
     let ev = drive_with(&mut e, &mut k, "Ctrl+Shift+u");
@@ -1971,7 +2092,7 @@ fn sustain_down_up_and_pedal_selection() {
     assert_eq!(cmdline::parse("pedal").unwrap(), Command::PedalSelection);
     // pedal: down at the first start, up at the last end, anything between removed
     set_sustain(&mut e, &[(500, 0)]);
-    drive_with(&mut e, &mut k, "Shift+Right");
+    drive_with(&mut e, &mut k, "Cmd+Right");
     let err = e.execute(&Command::PedalSelection, None).unwrap_err();
     assert_eq!(err, EditError::NothingSelected, "cursor at bar 2 has no note under it");
     drive_with(&mut e, &mut k, "a");
@@ -1981,7 +2102,7 @@ fn sustain_down_up_and_pedal_selection() {
     assert_eq!(ids(&e), vec![1, 2, 3]);
     assert_eq!(e.cursor.tick, Tick(3840), "cursor stays");
     // with nothing selected it pedals the note under the cursor
-    drive_with(&mut e, &mut k, "Escape Shift+Left Right Up Up Up Up");
+    drive_with(&mut e, &mut k, "Escape Cmd+Left Right Up Up Up Up");
     e.execute(&Command::PedalSelection, None).unwrap();
     assert_eq!(sustain(&e), vec![(0, 127), (G, 127), (3 * G, 0), (5 * G, 0)]);
     drive_with(&mut e, &mut k, "u u");
@@ -1992,18 +2113,18 @@ fn sustain_down_up_and_pedal_selection() {
 
 #[test]
 fn snapshot_insert_and_edit() {
-    let e = drive(Song::new_empty(), &km(), "n Right Up Up Up Up 2 n Right Right Shift+Up n a ] Shift+=");
+    let e = drive(Song::new_empty(), &km(), "n Right Up Up Up Up 2 n Right Right Cmd+Up n a ] Shift+=");
     insta::assert_ron_snapshot!("insert_and_edit", e.song);
 }
 
 #[test]
 fn snapshot_copy_paste_duplicate() {
-    let e = drive(song3(), &km(), "a c Shift+Right p d Ctrl+Down");
+    let e = drive(song3(), &km(), "a c Cmd+Right p d Alt+Shift+Down");
     insta::assert_ron_snapshot!("copy_paste_duplicate", e.song);
 }
 
 #[test]
-fn snapshot_move_mode() {
-    let e = drive(song3(), &km(), "v Right Right Right Right Up Up Up Up Enter m Shift+Right Up Up [ Escape");
-    insta::assert_ron_snapshot!("move_mode", e.song);
+fn snapshot_box_and_move() {
+    let e = drive(song3(), &km(), "n Right n Right n Shift+Left Shift+Left Alt+Up Alt+Up [ Escape");
+    insta::assert_ron_snapshot!("box_and_move", e.song);
 }
