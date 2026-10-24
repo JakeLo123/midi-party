@@ -1,9 +1,6 @@
 # MIDI Party
 
-A keyboard-driven, modal MIDI piano-roll editor and small DAW, written in Rust.
-Every edit — selecting, moving, stretching, velocity, copy/paste, tracks,
-controller lanes — is a key press, and every key is remappable. What changed in
-each version: `CHANGELOG.md`; ideas for later: `docs/PLAN.md`.
+A midi workstation with good keybindings.
 
 ## Build and run
 
@@ -18,36 +15,6 @@ default SoundFont. A tiny public-domain test bank ships in `assets/soundfonts/`;
 for real instruments download a General MIDI bank such as **GeneralUser GS**
 (32 MB) or **MuseScore_General** (MIT) and pass it with `--sf2`, or set it per
 track with `:sf2 path/to/bank.sf2 <preset>`.
-
-## Keys
-
-Press `Shift+/` for the live cheat sheet; `Cmd+k` opens the keymap editor. The basics:
-
-| Keys | Action |
-|---|---|
-| arrows / Shift+arrows / Ctrl+Left,Right | cursor by grid step / bar & octave / beat |
-| `n`, `Shift+n` | insert a note / a major chord at the cursor (`4 n` = four grid steps long) |
-| `x`, `Delete` | delete the selection (or the note under the cursor) |
-| `s`, `v`, `Shift+v` | toggle note under cursor / box select / time-range select; `Enter` confirms |
-| `a`, `b`, `w`, `Shift+s`, `Shift+p`, `i` | select all / bar / next 4 notes / chord / same pitch / invert |
-| `Tab`, `Shift+Tab`, `Shift+x` | step through the selection, drop the focused note |
-| `f t` `f b` `f e` `f o` `f a` `f l` | keep only: top / bottom of chords, every other, on-beat, above / below cursor |
-| `m` then arrows | move the selected notes; `[` `]` length, `-` `=` velocity, `Alt+Left/Right` nudge off-grid |
-| `c` `p` `d` `.` | copy, paste at cursor, duplicate, repeat last edit |
-| `q`, `Shift+q`, `h`, `Shift+l` | quantize starts / lengths, humanize, legato |
-| `u` / `Shift+u` | undo / redo |
-| `g` / `Shift+g` | finer / coarser grid |
-| `t` / `Shift+t`, `Cmd+t`, `Cmd+Shift+t` | next / previous track, add track, remove track |
-| `Ctrl+m`, `Ctrl+s`, `Ctrl+=`/`-`, `Ctrl+[`/`]` | mute, solo, track volume, track pan |
-| `Ctrl+.` / `Ctrl+,` | next / previous SoundFont preset |
-| `Shift+c`, `Ctrl+Shift+Up/Down`, `Ctrl+Shift+d/u` | cycle controller lane, nudge lane value, sustain pedal down / up |
-| `Space`, `Enter` | play/stop, play from cursor |
-| `:` | command line: `:w song.ron`, `:o file.mid`, `:export out.mp3`, `:bpm 96`, `:meter 3/4`, `:vel 70..110`, `:quantize 1/8 50%`, `:rename Bass`, `:sf2 bank.sf2 33`, `:lane ramp 0..127`, `:q` |
-
-Type a number before any key to repeat it. The mouse works too: click to place
-the cursor or select, Shift+click to toggle, double-click to insert, drag to
-move, drag a note's right edge to resize, drag empty space to box-select,
-wheel to scroll, pinch or Cmd+wheel to zoom.
 
 ## Configuration
 
@@ -74,10 +41,7 @@ cargo run -p mp-cli -- render --sf2 assets/soundfonts/florestan-subset.sf2 --son
 ## Versions
 
 The version number lives in one place, `version` in the root `Cargo.toml`, and
-follows `0.MINOR.PATCH`: the middle number goes up for new features or changed
-keys, the last for fixes only. Changes collect under *Unreleased* in
-`CHANGELOG.md`; a release moves them under the new number and tags the commit
-`vX.Y.Z`. `midi-party --version` prints it, and the cheat sheet shows it.
+follows [semantic versioning](https://semver.org/).
 
 Saved `.ron` songs carry a separate `format_version`. A file from a newer
 format is refused with a clear message; raise `FORMAT_VERSION` in
