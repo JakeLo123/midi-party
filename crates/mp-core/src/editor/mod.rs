@@ -325,6 +325,10 @@ impl Editor {
             // -------------------------------------------------------------- cursor
             Command::MoveCursor { dir, unit } => self.move_cursor(*dir, *unit, n)?,
             Command::ExtendSelection { dir, unit } => self.extend_selection(*dir, *unit, n, &mut ev)?,
+            Command::CursorToStart => {
+                self.cursor.tick = Tick::ZERO;
+                self.selection.clear();
+            }
 
             // -------------------------------------------------------------- edit
             Command::InsertNote => self.insert_note(n, &mut ev)?,

@@ -152,6 +152,9 @@ pub enum Command {
     /// box become the selection. Any other command ends the box and keeps the
     /// selection. Count: repeat.
     ExtendSelection { dir: Dir, unit: Unit },
+    /// Move the cursor to the start of the song, keeping its pitch, and clear the
+    /// selection. Count: ignored.
+    CursorToStart,
 
     // ------------------------------------------------------------------ edit
     /// Insert a note at the cursor with the current grid length and velocity 100,
@@ -452,6 +455,7 @@ impl Command {
         match self {
             Command::MoveCursor { .. } => "move_cursor",
             Command::ExtendSelection { .. } => "extend_selection",
+            Command::CursorToStart => "cursor_to_start",
             Command::InsertNote => "insert_note",
             Command::InsertChord { .. } => "insert_chord",
             Command::DeleteSelected => "delete_selected",
@@ -549,6 +553,7 @@ impl Command {
         match self {
             Command::MoveCursor { dir, unit } => format!("Move cursor {dir} one {unit}"),
             Command::ExtendSelection { dir, unit } => format!("Grow the selection box {dir} one {unit}"),
+            Command::CursorToStart => "Move the cursor to the start".to_string(),
             Command::InsertNote => "Insert a note at the cursor".to_string(),
             Command::InsertChord { intervals } => {
                 let list: Vec<String> = intervals.iter().map(ToString::to_string).collect();
@@ -739,7 +744,11 @@ impl Command {
             | Command::ZoomRowsOut
             | Command::ToggleCheatSheet
             | Command::EnterCommandLine => Category::View,
-            Command::Play | Command::Stop | Command::TogglePlay | Command::PlayFromCursor => Category::Transport,
+            Command::CursorToStart
+            | Command::Play
+            | Command::Stop
+            | Command::TogglePlay
+            | Command::PlayFromCursor => Category::Transport,
             Command::AddTrack
             | Command::RemoveTrack
             | Command::DuplicateTrack
@@ -789,6 +798,7 @@ impl Command {
         vec![
             Command::MoveCursor { dir: Dir::Right, unit: Unit::Grid },
             Command::ExtendSelection { dir: Dir::Right, unit: Unit::Grid },
+            Command::CursorToStart,
             Command::InsertNote,
             Command::InsertChord { intervals: vec![0, 4, 7] },
             Command::DeleteSelected,

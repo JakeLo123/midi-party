@@ -51,6 +51,7 @@ struct Spec {
 const SPECS: &[Spec] = &[
     Spec { name: "move_cursor", args: "<left|right|up|down> <grid|beat|bar|semitone|octave>", aliases: &[] },
     Spec { name: "extend_selection", args: "<left|right|up|down> <grid|beat|bar|semitone|octave>", aliases: &[] },
+    Spec { name: "cursor_to_start", args: "", aliases: &["start"] },
     Spec { name: "insert_note", args: "", aliases: &["n"] },
     Spec { name: "insert_chord", args: "<intervals e.g. 0,4,7>", aliases: &["chord"] },
     Spec { name: "delete_selected", args: "", aliases: &["del", "delete"] },
@@ -397,6 +398,7 @@ pub fn parse(line: &str) -> Result<Command, CmdLineError> {
             a.at_most(2)?;
             Command::MoveCursor { dir: a.one_of(0, "direction", DIRS)?, unit: a.one_of(1, "unit", UNITS)? }
         }
+        "cursor_to_start" => Command::CursorToStart,
         "extend_selection" => {
             a.at_most(2)?;
             Command::ExtendSelection { dir: a.one_of(0, "direction", DIRS)?, unit: a.one_of(1, "unit", UNITS)? }
@@ -668,7 +670,8 @@ pub fn to_line(cmd: &Command) -> String {
         Command::SetLaneValue { value } => vec![value.to_string()],
         Command::NudgeLaneValue { delta } => vec![delta.to_string()],
         Command::RampLane { from, to } => vec![from.to_string(), to.to_string()],
-        Command::InsertNote
+        Command::CursorToStart
+        | Command::InsertNote
         | Command::DeleteSelected
         | Command::Legato
         | Command::QuantizeLength
