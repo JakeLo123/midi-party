@@ -3,6 +3,8 @@
 # Arrows move the cursor; Shift+arrows grow a selection box; Alt+arrows move the
 # selected notes; Cmd+arrows jump a bar or an octave. Add Shift to a jump to select
 # that far, add Shift to an Alt move to move that far. Cmd+a/c/x/v/z work as usual.
+# Cmd+e hides or shows the piano roll under the tracks area; Cmd+0 fits the whole
+# song in the tracks area again after zooming it.
 #
 # One table: [normal].
 # Keys:   "Right", "Shift+Right", "n", "[" ... or a sequence "f t" (space separated).
@@ -126,6 +128,8 @@
 "Cmd+-"       = "zoom_out"
 "Cmd+Shift+=" = "zoom_rows_in"
 "Cmd+Shift+-" = "zoom_rows_out"
+"Cmd+e"       = "toggle_piano_roll"
+"Cmd+0"       = "zoom_to_fit"
 "Shift+/"     = "toggle_cheat_sheet"
 
 # --- tracks and mixer

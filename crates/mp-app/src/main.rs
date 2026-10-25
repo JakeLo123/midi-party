@@ -12,6 +12,7 @@ mod input;
 mod keymap_editor;
 mod piano_roll;
 mod theme;
+mod tracks_area;
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver};
@@ -34,6 +35,7 @@ use crate::input::{Chord, InputState, KeyRepeat};
 use crate::keymap_editor::KeymapEditor;
 use crate::piano_roll::{RollAction, RollView};
 use crate::theme::Theme;
+use crate::tracks_area::{TracksAction, TracksArea};
 
 const AUTOSAVE_INTERVAL: Duration = Duration::from_secs(30);
 const EXPORT_SAMPLE_RATE: u32 = 44_100;
@@ -112,7 +114,8 @@ const THEME_TEMPLATE: &str = r##"# midi-party theme.
 # set only what you want to change. Colors are "#rrggbb" or "#rrggbbaa".
 # Names: background, black_key_row, white_key, black_key, key_label, grid,
 # beat_line, bar_line, octave_line, note, note_selected, note_ghost, cursor,
-# cursor_fill, playhead, status_bg, status_fg, status_mode, status_dim, accent, error.
+# cursor_fill, playhead, lane, lane_current, roll_window, status_bg, status_fg,
+# status_mode, status_dim, accent, error.
 #
 # font_size = 14.0
 #
@@ -242,6 +245,9 @@ struct App {
     audio: Result<Audio, String>,
     view: RollView,
     roll_rect: Rect,
+    tracks: TracksArea,
+    /// Whether the piano roll is open under the tracks area.
+    show_roll: bool,
     config: ConfigWatcher,
     config_dir: PathBuf,
     theme: Theme,
@@ -266,6 +272,8 @@ struct App {
 impl App {
     fn new(cc: &eframe::CreationContext<'_>, args: Args) -> Self {
         cc.egui_ctx.set_theme(egui::Theme::Dark);
+        // egui otherwise takes Cmd+0 / Cmd+- / Cmd+= as UI-scale shortcuts before the keymap sees them.
+        cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
         let config_dir = args.config_dir.unwrap_or_else(default_config_dir);
         ensure_config_files(&config_dir);
         let (theme, theme_error) = Theme::load(&config_dir.join("theme.toml"));
@@ -326,6 +334,8 @@ impl App {
             audio,
             view: RollView::default(),
             roll_rect: Rect::NOTHING,
+            tracks: TracksArea::default(),
+            show_roll: true,
             config,
             config_dir,
             theme,
@@ -413,7 +423,13 @@ impl App {
             Err(other) => self.status = other.to_string(),
         }
         self.apply_events(events);
+        self.scroll_views_to_cursor();
+    }
+
+    /// Brings the cursor into view in both the piano roll and the tracks area.
+    fn scroll_views_to_cursor(&mut self) {
         self.view.ensure_cursor_visible(&self.editor, self.roll_rect);
+        self.tracks.keep_tick_visible(self.editor.cursor.tick.get() as f64);
     }
 
     fn apply_events(&mut self, events: Vec<EditorEvent>) {
@@ -452,6 +468,11 @@ impl App {
                 EditorEvent::ToggleCheatSheet => self.show_cheat_sheet = !self.show_cheat_sheet,
                 EditorEvent::View(ViewRequest::ZoomTime(factor)) => self.view.zoom_time(factor),
                 EditorEvent::View(ViewRequest::ZoomRows(factor)) => self.view.zoom_rows(factor),
+                EditorEvent::View(ViewRequest::TogglePianoRoll) => {
+                    self.show_roll = !self.show_roll;
+                    self.needs_scroll = true;
+                }
+                EditorEvent::View(ViewRequest::FitTracksToSong) => self.tracks.fit_to_song(),
             }
         }
     }
@@ -527,7 +548,28 @@ impl App {
                 self.status = format!("{} selected", self.editor.selection.len());
             }
         }
-        self.view.ensure_cursor_visible(&self.editor, self.roll_rect);
+        self.scroll_views_to_cursor();
+    }
+
+    fn apply_tracks_action(&mut self, action: TracksAction) {
+        if self.cmdline.is_some() || self.show_cheat_sheet {
+            return;
+        }
+        let tracks = self.editor.song.tracks.len();
+        match action {
+            TracksAction::ShowTrack { track } if track < tracks => {
+                self.editor.show_track(track);
+                self.editor.focus = None;
+            }
+            TracksAction::JumpTo { track, tick } if track < tracks => {
+                self.editor.show_track(track);
+                self.editor.focus = None;
+                self.editor.cursor.tick = Tick(tick);
+            }
+            TracksAction::SetCursorTick { tick } => self.editor.cursor.tick = Tick(tick),
+            TracksAction::ShowTrack { .. } | TracksAction::JumpTo { .. } => {}
+        }
+        self.scroll_views_to_cursor();
     }
 
     fn song_changed(&mut self) {
@@ -626,6 +668,7 @@ impl App {
                 self.file_path = Some(path.to_path_buf());
                 self.dirty = false;
                 self.view = RollView::default();
+                self.tracks = TracksArea::default();
                 self.needs_scroll = true;
                 if let Ok(audio) = &mut self.audio {
                     audio.sync_song(&self.editor.song);
@@ -679,6 +722,7 @@ impl App {
                     self.file_path = None;
                     self.dirty = false;
                     self.view = RollView::default();
+                    self.tracks = TracksArea::default();
                     if let Ok(audio) = &mut self.audio {
                         audio.sync_song(&self.editor.song);
                     }
@@ -804,49 +848,6 @@ impl App {
         }
     }
 
-    /// The track list with mixer state. Returns a track index when one is clicked.
-    fn draw_track_panel(&self, ui: &mut egui::Ui) -> Option<usize> {
-        let font = FontId::monospace(self.theme.font_size - 1.0);
-        let text = |s: String, color: &str| RichText::new(s).font(font.clone()).color(self.theme.color(color));
-        let song = &self.editor.song;
-        let mut clicked = None;
-        let any_solo = song.tracks.iter().any(|t| t.solo);
-        ui.label(text("TRACKS".into(), "status_mode").strong());
-        ui.add_space(2.0);
-        for (i, track) in song.tracks.iter().enumerate() {
-            let current = i == self.editor.track_index;
-            let instrument = match &track.instrument {
-                mp_core::Instrument::SoundFont { path, preset, .. } => {
-                    let font_name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("default");
-                    format!("{font_name} p{preset}")
-                }
-            };
-            let muted = track.mute || (any_solo && !track.solo);
-            let flags = format!("{}{}", if track.mute { "M" } else { "·" }, if track.solo { "S" } else { "·" });
-            let line1 = format!("{:>2} {}", i + 1, track.name);
-            let line2 = format!("   {instrument}");
-            let line3 = format!("   {:>3}% {:<4} {flags}", (track.volume * 100.0).round() as i32, mp_core::pan_label((track.pan * 100.0).round() as i32));
-            let name_color = if current { "note_selected" } else if muted { "status_dim" } else { "status_fg" };
-            let frame = egui::Frame::NONE.fill(if current { self.theme.color("black_key_row") } else { self.theme.color("status_bg") }).inner_margin(3.0);
-            let response = frame
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.label(text(line1, name_color).strong());
-                    ui.label(text(line2, "status_dim"));
-                    ui.label(text(line3, if muted { "status_dim" } else { "status_fg" }));
-                })
-                .response
-                .interact(egui::Sense::click());
-            if response.clicked() {
-                clicked = Some(i);
-            }
-        }
-        ui.add_space(6.0);
-        ui.label(text(format!("reverb {:>3}%", (song.master_reverb * 100.0).round() as i32), "status_dim"));
-        ui.label(text(format!("{:.0} bpm", song.tempo_map.bpm_at(Tick::ZERO)), "status_dim"));
-        clicked
-    }
-
     fn draw_status_bar(&self, ui: &mut egui::Ui) {
         let font = FontId::monospace(self.theme.font_size);
         let text = |s: String, color: &str| RichText::new(s).font(font.clone()).color(self.theme.color(color));
@@ -872,6 +873,7 @@ impl App {
             let track_name = e.track().map(|t| t.name.as_str()).unwrap_or("-");
             ui.label(text(format!("track {}/{} {}", e.track_index + 1, song.tracks.len(), track_name), "status_dim"));
             ui.label(text(format!("{:.0} bpm", song.tempo_map.bpm_at(e.cursor.tick)), "status_dim"));
+            ui.label(text(format!("reverb {:>3}%", (song.master_reverb * 100.0).round() as i32), "status_dim"));
             if !e.selection.is_empty() {
                 ui.label(text(format!("{} selected", e.selection.len()), "note_selected"));
             }
@@ -943,6 +945,7 @@ impl eframe::App for App {
         }
         if let Some(tick) = self.playhead_tick() {
             self.view.follow_playhead(tick, self.roll_rect);
+            self.tracks.keep_tick_visible(tick);
             ctx.request_repaint_after(Duration::from_millis(16));
         }
         if self.export_rx.is_some() {
@@ -953,32 +956,42 @@ impl eframe::App for App {
         egui::Panel::bottom("status")
             .frame(egui::Frame::NONE.fill(status_bg).inner_margin(4.0))
             .show(ui, |ui| self.draw_status_bar(ui));
-        let mut clicked_track = None;
-        egui::Panel::left("tracks")
-            .frame(egui::Frame::NONE.fill(status_bg).inner_margin(6.0))
-            .exact_size(190.0)
-            .resizable(false)
-            .show(ui, |ui| clicked_track = self.draw_track_panel(ui));
-        if let Some(index) = clicked_track {
-            if index != self.editor.track_index && index < self.editor.song.tracks.len() {
-                self.editor.track_index = index;
-                self.editor.selection.clear();
-                self.editor.focus = None;
-            }
-        }
         let playhead = self.playhead_tick();
         let background = self.theme.color("background");
+        let mut track_actions = Vec::new();
         let mut actions = Vec::new();
-        egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(background))
-            .show(ui, |ui| {
-                self.roll_rect = self.view.draw(ui, &self.editor, &self.theme, playhead, &mut actions);
-            });
+        if self.show_roll {
+            let roll_window = self.view.visible_ticks(self.roll_rect);
+            let available = ui.available_height();
+            egui::Panel::top("tracks")
+                .frame(egui::Frame::NONE.fill(status_bg))
+                .resizable(true)
+                .default_size(220.0)
+                .size_range(egui::Rangef::new(80.0, (available - 160.0).max(80.0)))
+                .show(ui, |ui| {
+                    self.tracks.draw(ui, &self.editor, &self.theme, playhead, roll_window, &mut track_actions);
+                });
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE.fill(background))
+                .show(ui, |ui| {
+                    self.roll_rect = self.view.draw(ui, &self.editor, &self.theme, playhead, &mut actions);
+                });
+        } else {
+            self.roll_rect = Rect::NOTHING;
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE.fill(status_bg))
+                .show(ui, |ui| {
+                    self.tracks.draw(ui, &self.editor, &self.theme, playhead, None, &mut track_actions);
+                });
+        }
+        for action in track_actions {
+            self.apply_tracks_action(action);
+        }
         for action in actions {
             self.apply_roll_action(action);
         }
         if self.needs_scroll && self.roll_rect.is_positive() {
-            self.view.ensure_cursor_visible(&self.editor, self.roll_rect);
+            self.scroll_views_to_cursor();
             self.needs_scroll = false;
         }
         if self.show_cheat_sheet {

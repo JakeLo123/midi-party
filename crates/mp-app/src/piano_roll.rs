@@ -158,6 +158,18 @@ impl RollView {
         }
     }
 
+    /// The tick range the note area is showing, once the roll has been laid out.
+    pub fn visible_ticks(&self, rect: Rect) -> Option<(f64, f64)> {
+        if !rect.is_positive() {
+            return None;
+        }
+        let area = Self::note_area(rect);
+        if area.width() <= 0.0 {
+            return None;
+        }
+        Some((self.left_tick, self.tick_at_right(area)))
+    }
+
     fn scroll_by(&mut self, dx_px: f32, dy_px: f32, area: Rect) {
         if dx_px != 0.0 {
             self.left_tick = (self.left_tick - (dx_px / self.px_per_tick) as f64).max(0.0);

@@ -109,6 +109,8 @@ const SPECS: &[Spec] = &[
     Spec { name: "zoom_out", args: "", aliases: &[] },
     Spec { name: "zoom_rows_in", args: "", aliases: &[] },
     Spec { name: "zoom_rows_out", args: "", aliases: &[] },
+    Spec { name: "toggle_piano_roll", args: "", aliases: &["roll"] },
+    Spec { name: "zoom_to_fit", args: "", aliases: &["fit"] },
     Spec { name: "toggle_cheat_sheet", args: "", aliases: &["help", "keys"] },
     Spec { name: "add_track", args: "", aliases: &["track add"] },
     Spec { name: "remove_track", args: "", aliases: &["track remove", "track rm"] },
@@ -534,6 +536,8 @@ pub fn parse(line: &str) -> Result<Command, CmdLineError> {
         "zoom_out" => Command::ZoomOut,
         "zoom_rows_in" => Command::ZoomRowsIn,
         "zoom_rows_out" => Command::ZoomRowsOut,
+        "toggle_piano_roll" => Command::TogglePianoRoll,
+        "zoom_to_fit" => Command::ZoomToFit,
         "toggle_cheat_sheet" => Command::ToggleCheatSheet,
         "add_track" => Command::AddTrack,
         "remove_track" => Command::RemoveTrack,
@@ -710,6 +714,8 @@ pub fn to_line(cmd: &Command) -> String {
         | Command::ZoomOut
         | Command::ZoomRowsIn
         | Command::ZoomRowsOut
+        | Command::TogglePianoRoll
+        | Command::ZoomToFit
         | Command::ToggleCheatSheet
         | Command::AddTrack
         | Command::RemoveTrack
@@ -831,6 +837,10 @@ mod tests {
         assert_eq!(parse("h"), Ok(Command::Humanize { velocity: 8, timing: 10 }));
         assert_eq!(parse("h 3 25"), Ok(Command::Humanize { velocity: 3, timing: 25 }));
         assert_eq!(parse("sel bar"), Ok(Command::SelectBar));
+        assert_eq!(parse("roll"), Ok(Command::TogglePianoRoll));
+        assert_eq!(parse("fit"), Ok(Command::ZoomToFit));
+        assert_eq!(parse(&to_line(&Command::TogglePianoRoll)), Ok(Command::TogglePianoRoll));
+        assert_eq!(parse(&to_line(&Command::ZoomToFit)), Ok(Command::ZoomToFit));
         assert_eq!(parse("sel next"), Ok(Command::SelectNextNotes { n: 4 }));
         assert_eq!(parse("sel next 8"), Ok(Command::SelectNextNotes { n: 8 }));
         assert_eq!(parse("sel above 100"), Ok(Command::SelectVelocityAbove { value: 100 }));

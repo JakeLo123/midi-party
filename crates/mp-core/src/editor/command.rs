@@ -331,6 +331,10 @@ pub enum Command {
     ZoomRowsIn,
     /// Ask the app to make piano-roll rows shorter. Count: repeat.
     ZoomRowsOut,
+    /// Ask the app to show or hide the piano roll under the tracks area. Count: ignored.
+    TogglePianoRoll,
+    /// Ask the app to fit the whole song in the tracks area. Count: ignored.
+    ZoomToFit,
     /// Ask the app to show or hide the cheat sheet. Count: ignored.
     ToggleCheatSheet,
 
@@ -513,6 +517,8 @@ impl Command {
             Command::ZoomOut => "zoom_out",
             Command::ZoomRowsIn => "zoom_rows_in",
             Command::ZoomRowsOut => "zoom_rows_out",
+            Command::TogglePianoRoll => "toggle_piano_roll",
+            Command::ZoomToFit => "zoom_to_fit",
             Command::ToggleCheatSheet => "toggle_cheat_sheet",
             Command::AddTrack => "add_track",
             Command::RemoveTrack => "remove_track",
@@ -638,6 +644,8 @@ impl Command {
             Command::ZoomOut => "Zoom out".to_string(),
             Command::ZoomRowsIn => "Taller rows".to_string(),
             Command::ZoomRowsOut => "Shorter rows".to_string(),
+            Command::TogglePianoRoll => "Show or hide the piano roll".to_string(),
+            Command::ZoomToFit => "Fit the whole song in the tracks area".to_string(),
             Command::ToggleCheatSheet => "Show or hide the cheat sheet".to_string(),
             Command::AddTrack => "Add a track".to_string(),
             Command::RemoveTrack => "Remove this track".to_string(),
@@ -742,6 +750,8 @@ impl Command {
             | Command::ZoomOut
             | Command::ZoomRowsIn
             | Command::ZoomRowsOut
+            | Command::TogglePianoRoll
+            | Command::ZoomToFit
             | Command::ToggleCheatSheet
             | Command::EnterCommandLine => Category::View,
             Command::CursorToStart
@@ -856,6 +866,8 @@ impl Command {
             Command::ZoomOut,
             Command::ZoomRowsIn,
             Command::ZoomRowsOut,
+            Command::TogglePianoRoll,
+            Command::ZoomToFit,
             Command::ToggleCheatSheet,
             Command::AddTrack,
             Command::RemoveTrack,

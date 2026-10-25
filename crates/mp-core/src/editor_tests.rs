@@ -1521,6 +1521,8 @@ fn view_and_app_commands_only_emit_events() {
     );
     assert_eq!(drive_with(&mut e, &mut k, "Cmd+Shift+="), vec![EditorEvent::View(ViewRequest::ZoomRows(ZOOM_ROWS_STEP))]);
     assert_eq!(drive_with(&mut e, &mut k, "Cmd+Shift+-"), vec![EditorEvent::View(ViewRequest::ZoomRows(1.0 / ZOOM_ROWS_STEP))]);
+    assert_eq!(drive_with(&mut e, &mut k, "Cmd+e"), vec![EditorEvent::View(ViewRequest::TogglePianoRoll)]);
+    assert_eq!(drive_with(&mut e, &mut k, "Cmd+0"), vec![EditorEvent::View(ViewRequest::FitTracksToSong)]);
     let ev = drive_with(&mut e, &mut k, "Shift+;");
     assert_eq!(ev, vec![EditorEvent::OpenCommandLine]);
     assert_eq!(e.undo.undo_depth(), 0);
@@ -1579,6 +1581,20 @@ fn set_sustain(e: &mut Editor, points: &[(u64, i32)]) {
     for (tick, value) in points {
         e.song.tracks[e.track_index].lanes.set_point(LaneKind::Sustain, Tick(*tick), *value);
     }
+}
+
+#[test]
+fn show_track_switches_and_clears_selection_without_undo() {
+    let mut e = Editor::new(three_tracks());
+    drive_with(&mut e, &mut km(), "Cmd+a");
+    assert!(!e.selection.is_empty());
+    e.box_anchor = Some(e.cursor);
+    e.show_track(1);
+    assert_eq!(e.track_index, 1);
+    assert!(e.selection.is_empty());
+    assert!(e.box_anchor.is_none());
+    assert_eq!(e.undo.undo_depth(), 0);
+    assert!(e.last_edit.is_none());
 }
 
 #[test]

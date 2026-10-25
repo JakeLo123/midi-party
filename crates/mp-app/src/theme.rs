@@ -84,7 +84,7 @@ mod tests {
     #[test]
     fn default_theme_defines_every_core_color() {
         let t = Theme::default_theme();
-        for name in ["background", "black_key_row", "white_key", "black_key", "key_label", "grid", "bar_line", "note", "note_selected", "cursor", "playhead", "status_bg", "status_fg"] {
+        for name in ["background", "black_key_row", "white_key", "black_key", "key_label", "grid", "bar_line", "note", "note_selected", "cursor", "playhead", "status_bg", "status_fg", "lane", "lane_current", "roll_window"] {
             assert_ne!(t.color(name), Color32::from_rgb(255, 0, 255), "missing color {name}");
         }
     }
