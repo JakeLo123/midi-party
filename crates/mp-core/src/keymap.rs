@@ -1,14 +1,14 @@
-//! Key bindings: TOML file → ([`Mode`], key sequence) → [`Command`].
+//! Key bindings: TOML file → key sequence → [`Command`].
 //!
 //! # File format
 //!
-//! One table per mode (`[normal]`, `[select]`, `[move]`). Keys are key sequences;
-//! values are a bare command name or an inline table with arguments:
+//! One `[normal]` table. Keys are key sequences; values are a bare command name or an
+//! inline table with arguments:
 //!
 //! ```toml
 //! [normal]
 //! "Right"       = { cmd = "move_cursor", dir = "right", unit = "grid" }
-//! "Shift+Right" = { cmd = "move_cursor", dir = "right", unit = "bar" }
+//! "Shift+Right" = { cmd = "extend_selection", dir = "right", unit = "grid" }
 //! "n"           = "insert_note"
 //! "g g"         = "select_all"          # a two-key sequence
 //! ```
@@ -16,7 +16,7 @@
 //! A chord is `[Ctrl+][Alt+][Shift+][Cmd+]Key`. `Key` is a named key (`Up Down Left
 //! Right Space Enter Escape Tab Backspace Delete Home End PageUp PageDown`) or one
 //! printable character. Uppercase letters are rejected: write `"Shift+n"`, not `"N"`.
-//! A space separates the chords of a multi-key sequence. Within one mode no sequence may
+//! A space separates the chords of a multi-key sequence. No sequence may
 //! be a prefix of another (`"g"` and `"g g"` together), and no chord may be bound twice.
 //!
 //! # Feeding keys
@@ -26,14 +26,13 @@
 //! `Command` is handed to [`crate::Editor::execute`] with the count, and `Unbound`
 //! drops both the pending keys and the count.
 
-use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use thiserror::Error;
 
-use crate::editor::{Command, Mode};
+use crate::editor::Command;
 
 /// A physical key, without modifiers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -254,7 +253,7 @@ pub fn sequence_to_string(seq: &[KeyChord]) -> String {
     seq.iter().map(ToString::to_string).collect::<Vec<_>>().join(" ")
 }
 
-/// One binding in a mode table.
+/// One binding: a key sequence and the command it runs.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Binding {
     pub keys: Vec<KeyChord>,
@@ -272,23 +271,23 @@ pub enum KeymapError {
     },
     #[error("keymap is not valid TOML: {0}")]
     Toml(#[from] toml::de::Error),
-    #[error("unknown mode table [{0}]: expected normal, select, move or command_line")]
-    UnknownMode(String),
-    #[error("[{mode}]: bindings must be a table of key = command")]
-    ModeNotATable { mode: String },
-    #[error("[{mode}] {key:?}: {source}")]
+    #[error("unknown table [{0}]: expected [normal]")]
+    UnknownTable(String),
+    #[error("[{table}]: bindings must be a table of key = command")]
+    NotATable { table: String },
+    #[error("[{table}] {key:?}: {source}")]
     BadKey {
-        mode: String,
+        table: String,
         key: String,
         #[source]
         source: KeyParseError,
     },
-    #[error("[{mode}] {key:?}: {reason}")]
-    BadCommand { mode: String, key: String, reason: String },
-    #[error("[{mode}] {key:?} is bound twice (same keys spelled differently?)")]
-    DuplicateBinding { mode: String, key: String },
-    #[error("[{mode}] {prefix:?} is a prefix of {longer:?}: a sequence cannot be both a binding and the start of another")]
-    PrefixConflict { mode: String, prefix: String, longer: String },
+    #[error("[{table}] {key:?}: {reason}")]
+    BadCommand { table: String, key: String, reason: String },
+    #[error("[{table}] {key:?} is bound twice (same keys spelled differently?)")]
+    DuplicateBinding { table: String, key: String },
+    #[error("[{table}] {prefix:?} is a prefix of {longer:?}: a sequence cannot be both a binding and the start of another")]
+    PrefixConflict { table: String, prefix: String, longer: String },
 }
 
 /// What one fed keypress resolved to.
@@ -307,45 +306,63 @@ pub enum Resolution {
 /// The loaded key bindings plus the small state needed to recognise multi-key
 /// sequences and count prefixes. See the module docs for the file format.
 ///
-/// Count rule: an unmodified digit in Normal/Select/Move mode is a count digit unless a
-/// sequence is already pending. A digit that is itself bound (say `0`) runs its binding
-/// when no count has started, and continues the count once one has (`1 0` is ten).
+/// Count rule: an unmodified digit is a count digit unless a sequence is already
+/// pending. A digit that is itself bound (say `0`) runs its binding when no count has
+/// started, and continues the count once one has (`1 0` is ten).
 #[derive(Clone, Debug, Default)]
 pub struct Keymap {
-    tables: BTreeMap<Mode, Vec<Binding>>,
+    bindings: Vec<Binding>,
     pending: Vec<KeyChord>,
     count_started: bool,
+    warnings: Vec<String>,
 }
+
+/// The one table of bindings in a keymap file.
+pub const BINDINGS_TABLE: &str = "normal";
+
+/// Tables that are accepted but ignored, so user keymaps written for earlier versions
+/// keep loading. Each one produces a warning.
+const RETIRED_TABLES: &[&str] = &["select", "move", "command_line"];
 
 impl Keymap {
     /// Parses a keymap from TOML text and validates it.
     pub fn from_toml_str(text: &str) -> Result<Keymap, KeymapError> {
         let root: toml::Table = toml::from_str(text)?;
-        let mut tables: BTreeMap<Mode, Vec<Binding>> = BTreeMap::new();
-        for (mode_name, value) in root {
-            let mode = Mode::from_name(&mode_name).ok_or_else(|| KeymapError::UnknownMode(mode_name.clone()))?;
+        let mut bindings = Vec::new();
+        let mut warnings = Vec::new();
+        for (table_name, value) in root {
+            if RETIRED_TABLES.contains(&table_name.as_str()) {
+                warnings.push(format!("ignored [{table_name}]: there are no modes any more, only [{BINDINGS_TABLE}]"));
+                continue;
+            }
+            if table_name != BINDINGS_TABLE {
+                return Err(KeymapError::UnknownTable(table_name));
+            }
             let table = match value {
                 toml::Value::Table(t) => t,
-                _ => return Err(KeymapError::ModeNotATable { mode: mode_name }),
+                _ => return Err(KeymapError::NotATable { table: table_name }),
             };
-            let mut bindings = Vec::new();
             for (key_str, spec) in table {
                 let keys = parse_sequence(&key_str).map_err(|source| KeymapError::BadKey {
-                    mode: mode_name.clone(),
+                    table: table_name.clone(),
                     key: key_str.clone(),
                     source,
                 })?;
                 let command = parse_command(spec).map_err(|reason| KeymapError::BadCommand {
-                    mode: mode_name.clone(),
+                    table: table_name.clone(),
                     key: key_str.clone(),
                     reason,
                 })?;
                 bindings.push(Binding { keys, command });
             }
-            validate_bindings(&mode_name, &bindings)?;
-            tables.insert(mode, bindings);
+            validate_bindings(&table_name, &bindings)?;
         }
-        Ok(Keymap { tables, pending: Vec::new(), count_started: false })
+        Ok(Keymap { bindings, pending: Vec::new(), count_started: false, warnings })
+    }
+
+    /// Non-fatal problems found while parsing, one line each.
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
     }
 
     /// Reads and parses a keymap file.
@@ -356,14 +373,9 @@ impl Keymap {
         Keymap::from_toml_str(&text)
     }
 
-    /// Feeds one keypress in `mode`. See [`Resolution`] and the count rule on [`Keymap`].
-    pub fn feed(&mut self, mode: Mode, chord: KeyChord) -> Resolution {
-        if mode == Mode::CommandLine {
-            self.reset();
-            return Resolution::Unbound;
-        }
-        let empty = Vec::new();
-        let table = self.tables.get(&mode).unwrap_or(&empty);
+    /// Feeds one keypress. See [`Resolution`] and the count rule on [`Keymap`].
+    pub fn feed(&mut self, chord: KeyChord) -> Resolution {
+        let table = &self.bindings;
         if self.pending.is_empty() && chord.mods.is_none() {
             if let Some(d) = chord.key.digit() {
                 let bound = table.iter().any(|b| b.keys.first() == Some(&chord));
@@ -403,27 +415,18 @@ impl Keymap {
         self.count_started
     }
 
-    /// All bindings of a mode as `(key sequence, command)`, sorted by key string, for
-    /// the cheat sheet.
-    pub fn bindings(&self, mode: Mode) -> Vec<(String, &Command)> {
-        let mut out: Vec<(String, &Command)> = self
-            .tables
-            .get(&mode)
-            .map(|v| v.iter().map(|b| (sequence_to_string(&b.keys), &b.command)).collect())
-            .unwrap_or_default();
+    /// All bindings as `(key sequence, command)`, sorted by key string, for the cheat
+    /// sheet.
+    pub fn bindings(&self) -> Vec<(String, &Command)> {
+        let mut out: Vec<(String, &Command)> =
+            self.bindings.iter().map(|b| (sequence_to_string(&b.keys), &b.command)).collect();
         out.sort_by(|a, b| a.0.cmp(&b.0));
         out
     }
 
-    /// The modes that have at least one binding.
-    pub fn modes(&self) -> Vec<Mode> {
-        self.tables.keys().copied().collect()
-    }
-
-    /// Looks up the exact sequence bound to a command in a mode, for the cheat sheet
-    /// ("undo: u").
-    pub fn key_for(&self, mode: Mode, command: &Command) -> Option<String> {
-        self.tables.get(&mode)?.iter().find(|b| &b.command == command).map(|b| sequence_to_string(&b.keys))
+    /// Looks up the exact sequence bound to a command, for the cheat sheet ("undo: u").
+    pub fn key_for(&self, command: &Command) -> Option<String> {
+        self.bindings.iter().find(|b| &b.command == command).map(|b| sequence_to_string(&b.keys))
     }
 }
 
@@ -445,16 +448,16 @@ fn parse_command(spec: toml::Value) -> Result<Command, String> {
     table.try_into::<Command>().map_err(|e| e.message().to_string())
 }
 
-fn validate_bindings(mode: &str, bindings: &[Binding]) -> Result<(), KeymapError> {
+fn validate_bindings(table: &str, bindings: &[Binding]) -> Result<(), KeymapError> {
     for (i, a) in bindings.iter().enumerate() {
         for b in &bindings[i + 1..] {
             if a.keys == b.keys {
-                return Err(KeymapError::DuplicateBinding { mode: mode.to_string(), key: sequence_to_string(&a.keys) });
+                return Err(KeymapError::DuplicateBinding { table: table.to_string(), key: sequence_to_string(&a.keys) });
             }
             let (short, long) = if a.keys.len() < b.keys.len() { (a, b) } else { (b, a) };
             if long.keys.starts_with(&short.keys) {
                 return Err(KeymapError::PrefixConflict {
-                    mode: mode.to_string(),
+                    table: table.to_string(),
                     prefix: sequence_to_string(&short.keys),
                     longer: sequence_to_string(&long.keys),
                 });
@@ -520,51 +523,39 @@ mod tests {
 "g u" = "undo"
 "0" = "clear_selection"
 "Shift+u" = "redo"
-
-[move]
-"Escape" = { cmd = "enter_mode", mode = "normal" }
 "#;
 
-    fn feed_str(km: &mut Keymap, mode: Mode, keys: &str) -> Vec<Resolution> {
-        parse_sequence(keys).unwrap().into_iter().map(|c| km.feed(mode, c)).collect()
+    fn feed_str(km: &mut Keymap, keys: &str) -> Vec<Resolution> {
+        parse_sequence(keys).unwrap().into_iter().map(|c| km.feed(c)).collect()
     }
 
     #[test]
     fn feed_resolves_bindings() {
         let mut km = Keymap::from_toml_str(SAMPLE).unwrap();
         assert_eq!(
-            feed_str(&mut km, Mode::Normal, "Right"),
+            feed_str(&mut km, "Right"),
             vec![Resolution::Command(Command::MoveCursor { dir: Dir::Right, unit: Unit::Grid })]
         );
-        assert_eq!(feed_str(&mut km, Mode::Normal, "n"), vec![Resolution::Command(Command::InsertNote)]);
-        assert_eq!(feed_str(&mut km, Mode::Normal, "Shift+u"), vec![Resolution::Command(Command::Redo)]);
-        assert_eq!(feed_str(&mut km, Mode::Normal, "q"), vec![Resolution::Unbound]);
-        // a different mode's table
-        assert_eq!(feed_str(&mut km, Mode::Move, "n"), vec![Resolution::Unbound]);
-        assert_eq!(
-            feed_str(&mut km, Mode::Move, "Escape"),
-            vec![Resolution::Command(Command::EnterMode { mode: Mode::Normal })]
-        );
-        // a mode with no table at all
-        assert_eq!(feed_str(&mut km, Mode::Select, "n"), vec![Resolution::Unbound]);
-        assert_eq!(feed_str(&mut km, Mode::CommandLine, "n"), vec![Resolution::Unbound]);
+        assert_eq!(feed_str(&mut km, "n"), vec![Resolution::Command(Command::InsertNote)]);
+        assert_eq!(feed_str(&mut km, "Shift+u"), vec![Resolution::Command(Command::Redo)]);
+        assert_eq!(feed_str(&mut km, "q"), vec![Resolution::Unbound]);
     }
 
     #[test]
     fn feed_sequences() {
         let mut km = Keymap::from_toml_str(SAMPLE).unwrap();
         assert_eq!(
-            feed_str(&mut km, Mode::Normal, "g g"),
+            feed_str(&mut km, "g g"),
             vec![Resolution::Pending, Resolution::Command(Command::SelectAll)]
         );
-        assert_eq!(feed_str(&mut km, Mode::Normal, "g u"), vec![Resolution::Pending, Resolution::Command(Command::Undo)]);
-        assert_eq!(feed_str(&mut km, Mode::Normal, "g"), vec![Resolution::Pending]);
+        assert_eq!(feed_str(&mut km, "g u"), vec![Resolution::Pending, Resolution::Command(Command::Undo)]);
+        assert_eq!(feed_str(&mut km, "g"), vec![Resolution::Pending]);
         assert_eq!(km.pending(), &[KeyChord::ch('g')]);
-        assert_eq!(feed_str(&mut km, Mode::Normal, "x"), vec![Resolution::Unbound]);
+        assert_eq!(feed_str(&mut km, "x"), vec![Resolution::Unbound]);
         assert!(km.pending().is_empty());
         // a digit while pending is not a count
-        assert_eq!(feed_str(&mut km, Mode::Normal, "g 3"), vec![Resolution::Pending, Resolution::Unbound]);
-        feed_str(&mut km, Mode::Normal, "g");
+        assert_eq!(feed_str(&mut km, "g 3"), vec![Resolution::Pending, Resolution::Unbound]);
+        feed_str(&mut km, "g");
         km.reset();
         assert!(km.pending().is_empty());
     }
@@ -573,40 +564,50 @@ mod tests {
     fn feed_counts() {
         let mut km = Keymap::from_toml_str(SAMPLE).unwrap();
         assert_eq!(
-            feed_str(&mut km, Mode::Normal, "1 2 n"),
+            feed_str(&mut km, "1 2 n"),
             vec![Resolution::Count(1), Resolution::Count(2), Resolution::Command(Command::InsertNote)]
         );
         assert!(!km.count_started());
         // bound 0 wins when no count has started ...
-        assert_eq!(feed_str(&mut km, Mode::Normal, "0"), vec![Resolution::Command(Command::ClearSelection)]);
+        assert_eq!(feed_str(&mut km, "0"), vec![Resolution::Command(Command::ClearSelection)]);
         // ... but continues a count once one has started
         assert_eq!(
-            feed_str(&mut km, Mode::Normal, "1 0 n"),
+            feed_str(&mut km, "1 0 n"),
             vec![Resolution::Count(1), Resolution::Count(0), Resolution::Command(Command::InsertNote)]
         );
-        // counts work in modes without a table too
-        assert_eq!(feed_str(&mut km, Mode::Select, "4"), vec![Resolution::Count(4)]);
+        assert_eq!(feed_str(&mut km, "4"), vec![Resolution::Count(4)]);
         assert!(km.count_started());
         km.reset();
         assert!(!km.count_started());
         // modified digits are never counts
-        assert_eq!(feed_str(&mut km, Mode::Normal, "Shift+4"), vec![Resolution::Unbound]);
+        assert_eq!(feed_str(&mut km, "Shift+4"), vec![Resolution::Unbound]);
         // an unbound key ends the count
-        assert_eq!(feed_str(&mut km, Mode::Normal, "3 q"), vec![Resolution::Count(3), Resolution::Unbound]);
+        assert_eq!(feed_str(&mut km, "3 q"), vec![Resolution::Count(3), Resolution::Unbound]);
         assert!(!km.count_started());
     }
 
     #[test]
     fn bindings_listing() {
         let km = Keymap::from_toml_str(SAMPLE).unwrap();
-        let b = km.bindings(Mode::Normal);
+        let b = km.bindings();
         let keys: Vec<&str> = b.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(keys, vec!["0", "Right", "Shift+u", "g g", "g u", "n"]);
-        assert!(km.bindings(Mode::Select).is_empty());
-        assert_eq!(km.modes(), vec![Mode::Normal, Mode::Move]);
-        assert_eq!(km.key_for(Mode::Normal, &Command::SelectAll), Some("g g".to_string()));
-        assert_eq!(km.key_for(Mode::Normal, &Command::Paste), None);
-        assert_eq!(km.key_for(Mode::Select, &Command::Paste), None);
+        assert_eq!(km.key_for(&Command::SelectAll), Some("g g".to_string()));
+        assert_eq!(km.key_for(&Command::Paste), None);
+    }
+
+    #[test]
+    fn retired_mode_tables_are_skipped_with_a_warning() {
+        let km = Keymap::from_toml_str(
+            "[normal]\n\"n\" = \"insert_note\"\n\n[select]\n\"v\" = \"undo\"\n\n[move]\n\"Left\" = 7\n\n[command_line]\n\"Escape\" = \"clear_selection\"",
+        )
+        .unwrap();
+        assert_eq!(km.bindings().len(), 1);
+        assert_eq!(km.warnings().len(), 3);
+        assert!(km.warnings()[0].contains("[command_line]"), "{:?}", km.warnings());
+        assert!(km.warnings()[1].contains("[move]"), "{:?}", km.warnings());
+        assert!(km.warnings()[2].contains("[select]"), "{:?}", km.warnings());
+        assert!(Keymap::from_toml_str("[normal]\n\"n\" = \"insert_note\"").unwrap().warnings().is_empty());
     }
 
     #[test]
@@ -634,10 +635,10 @@ mod tests {
         assert!(matches!(err, KeymapError::DuplicateBinding { .. }), "{err}");
 
         let err = Keymap::from_toml_str("[insert]\n\"n\" = \"undo\"").unwrap_err();
-        assert!(matches!(err, KeymapError::UnknownMode(_)), "{err}");
+        assert!(matches!(err, KeymapError::UnknownTable(_)), "{err}");
 
         let err = Keymap::from_toml_str("normal = 5").unwrap_err();
-        assert!(matches!(err, KeymapError::ModeNotATable { .. }), "{err}");
+        assert!(matches!(err, KeymapError::NotATable { .. }), "{err}");
 
         let err = Keymap::from_toml_str("[normal\n").unwrap_err();
         assert!(matches!(err, KeymapError::Toml(_)), "{err}");
@@ -653,7 +654,7 @@ mod tests {
         let path = dir.join("k.toml");
         std::fs::write(&path, SAMPLE).unwrap();
         let km = Keymap::load(&path).unwrap();
-        assert_eq!(km.bindings(Mode::Normal).len(), 6);
+        assert_eq!(km.bindings().len(), 6);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

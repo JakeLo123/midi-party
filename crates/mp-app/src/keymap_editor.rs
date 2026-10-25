@@ -5,14 +5,13 @@
 use std::path::Path;
 
 use egui::{Align2, FontId, RichText, Stroke, Vec2};
-use mp_core::{Command, Keymap, Mode};
+use mp_core::{Command, Keymap, BINDINGS_TABLE};
 use toml_edit::{DocumentMut, InlineTable, Item, Value};
 
 use crate::theme::Theme;
 
 #[derive(Clone)]
 struct Row {
-    mode: Mode,
     keys: String,
     command: Command,
 }
@@ -62,12 +61,12 @@ fn binding_value(command: &Command) -> Result<Value, String> {
 }
 
 /// Writes (or removes, with `None`) one binding in the user's keymap file.
-pub fn write_binding(path: &Path, mode: Mode, keys: &str, command: Option<&Command>) -> Result<(), String> {
+pub fn write_binding(path: &Path, keys: &str, command: Option<&Command>) -> Result<(), String> {
     let text = std::fs::read_to_string(path).unwrap_or_default();
     let mut doc: DocumentMut = text.parse().map_err(|e| format!("keymap.toml: {e}"))?;
-    let table = doc.entry(mode.name()).or_insert(toml_edit::table());
+    let table = doc.entry(BINDINGS_TABLE).or_insert(toml_edit::table());
     let Some(table) = table.as_table_mut() else {
-        return Err(format!("[{}] in keymap.toml is not a table", mode.name()));
+        return Err(format!("[{BINDINGS_TABLE}] in keymap.toml is not a table"));
     };
     let value = match command {
         Some(c) => binding_value(c)?,
@@ -79,23 +78,18 @@ pub fn write_binding(path: &Path, mode: Mode, keys: &str, command: Option<&Comma
 
 impl KeymapEditor {
     pub fn open(&mut self, keymap: &Keymap) {
-        self.rows.clear();
-        for mode in [Mode::Normal, Mode::Select, Mode::Move] {
-            let mut rows: Vec<Row> =
-                keymap.bindings(mode).into_iter().map(|(keys, c)| Row { mode, keys, command: c.clone() }).collect();
-            if mode == Mode::Normal {
-                // Commands with no key yet, so they can be given one.
-                for example in Command::examples() {
-                    if !rows.iter().any(|r| r.command.name() == example.name()) {
-                        rows.push(Row { mode, keys: String::new(), command: example });
-                    }
-                }
+        let mut rows: Vec<Row> =
+            keymap.bindings().into_iter().map(|(keys, c)| Row { keys, command: c.clone() }).collect();
+        // Commands with no key yet, so they can be given one.
+        for example in Command::examples() {
+            if !rows.iter().any(|r| r.command.name() == example.name()) {
+                rows.push(Row { keys: String::new(), command: example });
             }
-            rows.sort_by(|a, b| {
-                (a.command.category().to_string(), a.command.describe()).cmp(&(b.command.category().to_string(), b.command.describe()))
-            });
-            self.rows.extend(rows);
         }
+        rows.sort_by(|a, b| {
+            (a.command.category().to_string(), a.command.describe()).cmp(&(b.command.category().to_string(), b.command.describe()))
+        });
+        self.rows = rows;
         self.filter.clear();
         self.selected = 0;
         self.capturing = false;
@@ -113,7 +107,6 @@ impl KeymapEditor {
                     || r.keys.to_lowercase().contains(&needle)
                     || r.command.name().contains(&needle)
                     || r.command.describe().to_lowercase().contains(&needle)
-                    || r.mode.name().contains(&needle)
             })
             .map(|(i, _)| i)
             .collect()
@@ -143,9 +136,9 @@ impl KeymapEditor {
                 return None;
             }
             let row = row?;
-            return Some(match write_binding(keymap_path, row.mode, chord, Some(&row.command)) {
+            return Some(match write_binding(keymap_path, chord, Some(&row.command)) {
                 Ok(()) => {
-                    self.message = format!("{chord} → {} ({} mode) saved", row.command.name(), row.mode.name());
+                    self.message = format!("{chord} → {} saved", row.command.name());
                     self.message.clone()
                 }
                 Err(e) => {
@@ -178,9 +171,9 @@ impl KeymapEditor {
                     self.filter.pop();
                     self.selected = 0;
                 } else if let Some(row) = row.filter(|r| !r.keys.is_empty()) {
-                    return Some(match write_binding(keymap_path, row.mode, &row.keys, None) {
+                    return Some(match write_binding(keymap_path, &row.keys, None) {
                         Ok(()) => {
-                            self.message = format!("{} unbound ({} mode)", row.keys, row.mode.name());
+                            self.message = format!("{} unbound", row.keys);
                             self.message.clone()
                         }
                         Err(e) => e,
@@ -236,7 +229,6 @@ impl KeymapEditor {
                         let response = egui::Frame::NONE.fill(bg).inner_margin(2.0).show(ui, |ui| {
                             ui.set_width(inner_w - 8.0);
                             ui.horizontal(|ui| {
-                                ui.add_sized([60.0, 0.0], egui::Label::new(mono(row.mode.name()).color(theme.color("status_dim"))));
                                 let keys = if row.keys.is_empty() { "—" } else { &row.keys };
                                 ui.add_sized(
                                     [150.0, 0.0],
@@ -264,9 +256,9 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("keymap.toml");
         std::fs::write(&path, "# my notes\npreset = \"vim\"\n\n[normal]\n\"z\" = \"undo\" # keep me\n").unwrap();
-        write_binding(&path, Mode::Normal, "Shift+n", Some(&Command::InsertChord { intervals: vec![0, 3, 7] })).unwrap();
-        write_binding(&path, Mode::Move, "x", None).unwrap();
-        write_binding(&path, Mode::Normal, "y", Some(&Command::Copy)).unwrap();
+        write_binding(&path, "Shift+n", Some(&Command::InsertChord { intervals: vec![0, 3, 7] })).unwrap();
+        write_binding(&path, "x", None).unwrap();
+        write_binding(&path, "y", Some(&Command::Copy)).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("# my notes"));
         assert!(text.contains("# keep me"));
@@ -280,7 +272,7 @@ mod tests {
         let chord = normal["Shift+n"].as_table().unwrap();
         assert_eq!(chord["cmd"].as_str(), Some("insert_chord"));
         assert_eq!(chord["intervals"].as_array().map(|a| a.len()), Some(3));
-        assert_eq!(table["move"]["x"].as_str(), Some("unbind"));
+        assert_eq!(normal["x"].as_str(), Some("unbind"));
         assert!(text.contains("{ cmd = \"insert_chord\", intervals = [0, 3, 7] }"), "{text}");
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -12,7 +12,6 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::editor::Mode;
 use crate::song::LaneKind;
 use crate::time::Grid;
 
@@ -93,7 +92,6 @@ pub enum Category {
     Clipboard,
     Transport,
     View,
-    Mode,
     /// Tracks and the mixer: add/remove/reorder, volume, pan, mute, solo, instrument.
     Track,
     /// Controller lanes: sustain, pitch bend, mod wheel, volume and pan automation.
@@ -109,7 +107,6 @@ impl fmt::Display for Category {
             Category::Clipboard => "Clipboard",
             Category::Transport => "Transport",
             Category::View => "View",
-            Category::Mode => "Mode",
             Category::Track => "Track",
             Category::Lane => "Lane",
         })
@@ -147,9 +144,17 @@ fn default_keep_every() -> u32 {
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Command {
     // ------------------------------------------------------------------ cursor
-    /// Move the cursor one `unit` in `dir`. Pitch clamps to 0..=127, time to ≥ 0.
-    /// In Select mode this also grows the selection box. Count: repeat.
+    /// Move the cursor one `unit` in `dir` and clear the selection. Pitch clamps to
+    /// 0..=127, time to ≥ 0. Count: repeat.
     MoveCursor { dir: Dir, unit: Unit },
+    /// Move the cursor like `move_cursor` while growing a selection box from where the
+    /// cursor was before the first `extend_selection`; the notes starting inside the
+    /// box become the selection. Any other command ends the box and keeps the
+    /// selection. Count: repeat.
+    ExtendSelection { dir: Dir, unit: Unit },
+    /// Move the cursor to the start of the song, keeping its pitch, and clear the
+    /// selection. Count: ignored.
+    CursorToStart,
 
     // ------------------------------------------------------------------ edit
     /// Insert a note at the cursor with the current grid length and velocity 100,
@@ -226,18 +231,6 @@ pub enum Command {
     /// Add or remove the note under the cursor from the selection (and audition it).
     /// Count: ignored.
     ToggleSelectUnderCursor,
-    /// Switch mode. Entering Select anchors the box at the cursor; returning to Normal
-    /// from Select cancels (anchor and selection cleared, or restored for a subtract
-    /// box), from Move keeps the selection. Count: ignored.
-    EnterMode { mode: Mode },
-    /// Enter Select mode with a box spanning every pitch: arrows only extend it in time.
-    /// Count: ignored.
-    EnterTimeSelect,
-    /// Enter Select mode with a box that removes notes from the current selection
-    /// instead of selecting them; Escape puts them back. Count: ignored.
-    EnterSubtractSelect,
-    /// Leave Select mode keeping the selection. Count: ignored.
-    ConfirmSelection,
     /// Select every note on the current track. Count: ignored.
     SelectAll,
     /// Deselect everything. Count: ignored.
@@ -309,6 +302,9 @@ pub enum Command {
     /// Copy the selected notes (or the note under the cursor) to the clipboard.
     /// Needs notes. Count: ignored.
     Copy,
+    /// Copy the selected notes (or the note under the cursor) to the clipboard and
+    /// delete them, as one undo step. Needs notes. Count: ignored.
+    Cut,
     /// Paste the clipboard at the cursor tick with the original pitches. The pasted notes
     /// become the selection and the cursor jumps to their end. Count: paste that many
     /// copies back to back.
@@ -458,6 +454,8 @@ impl Command {
     pub fn name(&self) -> &'static str {
         match self {
             Command::MoveCursor { .. } => "move_cursor",
+            Command::ExtendSelection { .. } => "extend_selection",
+            Command::CursorToStart => "cursor_to_start",
             Command::InsertNote => "insert_note",
             Command::InsertChord { .. } => "insert_chord",
             Command::DeleteSelected => "delete_selected",
@@ -478,10 +476,6 @@ impl Command {
             Command::Undo => "undo",
             Command::Redo => "redo",
             Command::ToggleSelectUnderCursor => "toggle_select_under_cursor",
-            Command::EnterMode { .. } => "enter_mode",
-            Command::EnterTimeSelect => "enter_time_select",
-            Command::EnterSubtractSelect => "enter_subtract_select",
-            Command::ConfirmSelection => "confirm_selection",
             Command::SelectAll => "select_all",
             Command::ClearSelection => "clear_selection",
             Command::SelectBar => "select_bar",
@@ -508,6 +502,7 @@ impl Command {
             Command::KeepAfterCursor => "keep_after_cursor",
             Command::KeepBeforeCursor => "keep_before_cursor",
             Command::Copy => "copy",
+            Command::Cut => "cut",
             Command::Paste => "paste",
             Command::Duplicate => "duplicate",
             Command::SetGrid { .. } => "set_grid",
@@ -557,6 +552,8 @@ impl Command {
     pub fn describe(&self) -> String {
         match self {
             Command::MoveCursor { dir, unit } => format!("Move cursor {dir} one {unit}"),
+            Command::ExtendSelection { dir, unit } => format!("Grow the selection box {dir} one {unit}"),
+            Command::CursorToStart => "Move the cursor to the start".to_string(),
             Command::InsertNote => "Insert a note at the cursor".to_string(),
             Command::InsertChord { intervals } => {
                 let list: Vec<String> = intervals.iter().map(ToString::to_string).collect();
@@ -600,10 +597,6 @@ impl Command {
             Command::Undo => "Undo".to_string(),
             Command::Redo => "Redo".to_string(),
             Command::ToggleSelectUnderCursor => "Toggle selection of the note under the cursor".to_string(),
-            Command::EnterMode { mode } => format!("Enter {mode} mode"),
-            Command::EnterTimeSelect => "Select a time range (all pitches)".to_string(),
-            Command::EnterSubtractSelect => "Subtract a box from the selection".to_string(),
-            Command::ConfirmSelection => "Confirm selection and return to Normal mode".to_string(),
             Command::SelectAll => "Select all notes on this track".to_string(),
             Command::ClearSelection => "Clear the selection".to_string(),
             Command::SelectBar => "Select the notes in this bar".to_string(),
@@ -633,6 +626,7 @@ impl Command {
             Command::KeepAfterCursor => "Keep only notes at or after the cursor".to_string(),
             Command::KeepBeforeCursor => "Keep only notes before the cursor".to_string(),
             Command::Copy => "Copy selected notes".to_string(),
+            Command::Cut => "Cut selected notes".to_string(),
             Command::Paste => "Paste at the cursor".to_string(),
             Command::Duplicate => "Duplicate selected notes after themselves".to_string(),
             Command::SetGrid { grid } => format!("Set grid to {grid}"),
@@ -694,9 +688,7 @@ impl Command {
         match self {
             Command::MoveCursor { .. } => Category::Cursor,
             Command::ToggleSelectUnderCursor
-            | Command::EnterTimeSelect
-            | Command::EnterSubtractSelect
-            | Command::ConfirmSelection
+            | Command::ExtendSelection { .. }
             | Command::SelectAll
             | Command::ClearSelection
             | Command::SelectBar
@@ -740,7 +732,7 @@ impl Command {
             | Command::RepeatLastEdit
             | Command::Undo
             | Command::Redo => Category::Edit,
-            Command::Copy | Command::Paste | Command::Duplicate => Category::Clipboard,
+            Command::Copy | Command::Cut | Command::Paste | Command::Duplicate => Category::Clipboard,
             Command::SetGrid { .. }
             | Command::CycleGrid { .. }
             | Command::SetSwing { .. }
@@ -750,9 +742,13 @@ impl Command {
             | Command::ZoomOut
             | Command::ZoomRowsIn
             | Command::ZoomRowsOut
-            | Command::ToggleCheatSheet => Category::View,
-            Command::Play | Command::Stop | Command::TogglePlay | Command::PlayFromCursor => Category::Transport,
-            Command::EnterMode { .. } | Command::EnterCommandLine => Category::Mode,
+            | Command::ToggleCheatSheet
+            | Command::EnterCommandLine => Category::View,
+            Command::CursorToStart
+            | Command::Play
+            | Command::Stop
+            | Command::TogglePlay
+            | Command::PlayFromCursor => Category::Transport,
             Command::AddTrack
             | Command::RemoveTrack
             | Command::DuplicateTrack
@@ -790,7 +786,7 @@ impl Command {
             Category::Edit | Category::Track => true,
             Category::Clipboard => !matches!(self, Command::Copy),
             Category::Lane => !matches!(self, Command::ShowLane { .. } | Command::CycleLane),
-            Category::Cursor | Category::Selection | Category::Transport | Category::View | Category::Mode => false,
+            Category::Cursor | Category::Selection | Category::Transport | Category::View => false,
         }
     }
 
@@ -801,6 +797,8 @@ impl Command {
     pub fn examples() -> Vec<Command> {
         vec![
             Command::MoveCursor { dir: Dir::Right, unit: Unit::Grid },
+            Command::ExtendSelection { dir: Dir::Right, unit: Unit::Grid },
+            Command::CursorToStart,
             Command::InsertNote,
             Command::InsertChord { intervals: vec![0, 4, 7] },
             Command::DeleteSelected,
@@ -821,10 +819,6 @@ impl Command {
             Command::Undo,
             Command::Redo,
             Command::ToggleSelectUnderCursor,
-            Command::EnterMode { mode: Mode::Select },
-            Command::EnterTimeSelect,
-            Command::EnterSubtractSelect,
-            Command::ConfirmSelection,
             Command::SelectAll,
             Command::ClearSelection,
             Command::SelectBar,
@@ -851,6 +845,7 @@ impl Command {
             Command::KeepAfterCursor,
             Command::KeepBeforeCursor,
             Command::Copy,
+            Command::Cut,
             Command::Paste,
             Command::Duplicate,
             Command::SetGrid { grid: Grid::default() },
@@ -934,9 +929,11 @@ mod tests {
         let c: Command =
             toml::from_str::<toml::Table>("cmd = \"set_grid\"\ngrid = \"1/8T\"").unwrap().try_into().unwrap();
         assert_eq!(c, Command::SetGrid { grid: Grid { base: Division::Eighth, modifier: GridModifier::Triplet } });
-        let c: Command =
-            toml::from_str::<toml::Table>("cmd = \"enter_mode\"\nmode = \"select\"").unwrap().try_into().unwrap();
-        assert_eq!(c, Command::EnterMode { mode: Mode::Select });
+        let c: Command = toml::from_str::<toml::Table>("cmd = \"extend_selection\"\ndir = \"up\"\nunit = \"octave\"")
+            .unwrap()
+            .try_into()
+            .unwrap();
+        assert_eq!(c, Command::ExtendSelection { dir: Dir::Up, unit: Unit::Octave });
         // optional fields take their defaults
         let c: Command = toml::from_str::<toml::Table>("cmd = \"quantize\"").unwrap().try_into().unwrap();
         assert_eq!(c, Command::Quantize { grid: None, strength: 100, swing: 0 });
@@ -971,7 +968,7 @@ mod tests {
         let mut all = Command::examples();
         all.extend([
             Command::MoveCursor { dir: Dir::Left, unit: Unit::Bar },
-            Command::EnterMode { mode: Mode::Move },
+            Command::ExtendSelection { dir: Dir::Left, unit: Unit::Beat },
             Command::MoveSelected { dir: Dir::Up, unit: Unit::Octave },
             Command::ChangeLength { delta_steps: -1 },
             Command::TransposeSelected { semitones: -12 },

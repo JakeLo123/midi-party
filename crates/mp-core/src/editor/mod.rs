@@ -3,16 +3,16 @@
 //! # From keypress to edit
 //!
 //! 1. The app (or the test harness) turns a keypress into a [`crate::KeyChord`].
-//! 2. [`crate::Keymap::feed`] maps the chord, in the current [`Mode`], to a
-//!    [`Command`] (or a count digit, or "still pending" for multi-key sequences).
+//! 2. [`crate::Keymap::feed`] maps the chord to a [`Command`] (or a count digit, or
+//!    "still pending" for multi-key sequences).
 //! 3. [`Editor::execute`] runs the command with the optional count. It is one
 //!    exhaustive `match`; nothing else in the program edits the song.
-//! 4. Commands that only move the cursor, change mode or change the selection return
+//! 4. Commands that only move the cursor or change the selection return
 //!    straight away and are not undoable. Commands that touch the [`Song`] first call
 //!    `commit` (which pushes an undo [`crate::Snapshot`] of the pre-edit state), then
 //!    mutate, then emit [`EditorEvent::SongChanged`] so the app can rebuild its audio
 //!    snapshot, plus [`EditorEvent::Audition`] for the notes worth hearing.
-//! 5. Transport, zoom and cheat-sheet commands change nothing here: they only emit an
+//! 5. Transport, zoom, cheat-sheet and command-line commands change nothing here: they only emit an
 //!    [`EditorEvent`] for the app, so their key bindings can live in the keymap file.
 //! 6. Errors ([`EditError`]) leave the editor exactly as it was and are meant to be
 //!    shown in the status bar.
@@ -26,7 +26,6 @@ pub mod edit_ops;
 pub mod select;
 
 use std::collections::BTreeSet;
-use std::fmt;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -75,52 +74,6 @@ impl Default for Cursor {
     }
 }
 
-/// Editing modes. Each has its own keymap table.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Mode {
-    /// Cursor movement and one-shot edits.
-    #[default]
-    Normal,
-    /// Arrows grow a selection box from the anchor; Enter confirms.
-    Select,
-    /// Arrows move the selected notes instead of the cursor.
-    Move,
-    /// Typing a `:command`; keys go to the text field, not the keymap.
-    CommandLine,
-}
-
-impl Mode {
-    /// All modes, in keymap-table order.
-    pub const ALL: [Mode; 4] = [Mode::Normal, Mode::Select, Mode::Move, Mode::CommandLine];
-
-    /// The snake_case name used as the TOML table name (`[normal]`, `[select]`, ...).
-    pub fn name(self) -> &'static str {
-        match self {
-            Mode::Normal => "normal",
-            Mode::Select => "select",
-            Mode::Move => "move",
-            Mode::CommandLine => "command_line",
-        }
-    }
-
-    /// Parses a TOML table name.
-    pub fn from_name(s: &str) -> Option<Mode> {
-        Mode::ALL.into_iter().find(|m| m.name() == s)
-    }
-}
-
-impl fmt::Display for Mode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Mode::Normal => "Normal",
-            Mode::Select => "Select",
-            Mode::Move => "Move",
-            Mode::CommandLine => "Command",
-        })
-    }
-}
-
 /// What a transport command asks the app to do. The editor has no playhead, so every
 /// start position is a tick it chose (the cursor or the song start).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -150,8 +103,8 @@ pub enum EditorEvent {
     SongChanged,
     /// Play these notes once so the user hears what they just did.
     Audition(Vec<Note>),
-    /// The editing mode changed.
-    ModeChanged(Mode),
+    /// Open the `:` command line; the app owns the text field.
+    OpenCommandLine,
     /// A human-readable summary of the action, e.g. `"moved 3 notes +2 st"`.
     Status(String),
     /// A transport command was run; the app owns playback.
@@ -213,7 +166,6 @@ pub struct Editor {
     pub lane: Option<LaneKind>,
     pub cursor: Cursor,
     pub selection: BTreeSet<NoteId>,
-    pub mode: Mode,
     /// The count prefix typed so far (for the status bar); see [`Editor::push_count_digit`].
     pub count: Option<u32>,
     pub grid: Grid,
@@ -222,15 +174,9 @@ pub struct Editor {
     /// Notes relative to the clip start (first note at tick 0).
     pub clipboard: Vec<Note>,
     pub undo: UndoStack,
-    /// Corner of the selection box fixed when Select mode was entered.
-    pub select_anchor: Option<Cursor>,
-    /// In Select mode: the box spans every pitch (`enter_time_select`).
-    pub select_all_pitches: bool,
-    /// In Select mode: the box removes notes from `select_base` instead of selecting
-    /// (`enter_subtract_select`).
-    pub select_subtract: bool,
-    /// The selection as it was when a subtract box was started (restored on Escape).
-    pub select_base: BTreeSet<NoteId>,
+    /// Fixed corner of the selection box while `extend_selection` is growing one; the
+    /// cursor is the other corner. Any other command ends the box (`None`).
+    pub box_anchor: Option<Cursor>,
     /// The selected note Tab last stepped onto, drawn highlighted. Cleared whenever the
     /// selection changes by any other means.
     pub focus: Option<NoteId>,
@@ -244,7 +190,7 @@ pub struct Editor {
 }
 
 impl Editor {
-    /// Wraps a song with the cursor at tick 0 / middle C, Normal mode, 1/16 grid.
+    /// Wraps a song with the cursor at tick 0 / middle C, 1/16 grid.
     pub fn new(song: Song) -> Self {
         Editor {
             song,
@@ -252,16 +198,12 @@ impl Editor {
             lane: None,
             cursor: Cursor::default(),
             selection: BTreeSet::new(),
-            mode: Mode::Normal,
             count: None,
             grid: Grid::default(),
             swing: 0,
             clipboard: Vec::new(),
             undo: UndoStack::default(),
-            select_anchor: None,
-            select_all_pitches: false,
-            select_subtract: false,
-            select_base: BTreeSet::new(),
+            box_anchor: None,
             focus: None,
             last_edit: None,
             last_edit_count: None,
@@ -361,33 +303,10 @@ impl Editor {
         }
     }
 
-    /// Recomputes the selection from the box between the anchor and the cursor,
-    /// honouring the time-select and subtract flags.
+    /// Replaces the selection with the notes in the box between the anchor and the cursor.
     fn refresh_box_selection(&mut self) {
-        let (Some(anchor), Some(track)) = (self.select_anchor, self.track()) else { return };
-        let cell = self.grid_ticks();
-        let in_box = if self.select_all_pitches {
-            select::time_box_ids(track, anchor, self.cursor, cell)
-        } else {
-            select::box_ids(track, anchor, self.cursor, cell)
-        };
-        self.selection =
-            if self.select_subtract { self.select_base.difference(&in_box).copied().collect() } else { in_box };
-    }
-
-    /// Forgets the box anchor and the Select-mode flags (not the selection itself).
-    fn reset_select_state(&mut self) {
-        self.select_anchor = None;
-        self.select_all_pitches = false;
-        self.select_subtract = false;
-        self.select_base.clear();
-    }
-
-    fn set_mode(&mut self, mode: Mode, events: &mut Vec<EditorEvent>) {
-        if self.mode != mode {
-            self.mode = mode;
-            events.push(EditorEvent::ModeChanged(mode));
-        }
+        let (Some(anchor), Some(track)) = (self.box_anchor, self.track()) else { return };
+        self.selection = select::box_ids(track, anchor, self.cursor, self.grid_ticks());
     }
 
     /// Runs one command. `count` is the typed count prefix (`None` = no prefix); each
@@ -404,7 +323,12 @@ impl Editor {
         let selection_before = self.selection.clone();
         match cmd {
             // -------------------------------------------------------------- cursor
-            Command::MoveCursor { dir, unit } => self.move_cursor(*dir, *unit, n, &mut ev)?,
+            Command::MoveCursor { dir, unit } => self.move_cursor(*dir, *unit, n)?,
+            Command::ExtendSelection { dir, unit } => self.extend_selection(*dir, *unit, n, &mut ev)?,
+            Command::CursorToStart => {
+                self.cursor.tick = Tick::ZERO;
+                self.selection.clear();
+            }
 
             // -------------------------------------------------------------- edit
             Command::InsertNote => self.insert_note(n, &mut ev)?,
@@ -437,20 +361,6 @@ impl Editor {
 
             // -------------------------------------------------------------- selection
             Command::ToggleSelectUnderCursor => self.toggle_select_under_cursor(&mut ev)?,
-            Command::EnterMode { mode } => self.enter_mode(*mode, &mut ev),
-            Command::EnterTimeSelect => {
-                self.enter_select(true, false, &mut ev);
-                ev.push(EditorEvent::Status(format!("time select: {} notes in range", self.selection.len())));
-            }
-            Command::EnterSubtractSelect => {
-                self.enter_select(false, true, &mut ev);
-                ev.push(EditorEvent::Status(format!("subtract box: {} notes selected", self.selection.len())));
-            }
-            Command::ConfirmSelection => {
-                self.reset_select_state();
-                self.set_mode(Mode::Normal, &mut ev);
-                ev.push(EditorEvent::Status(format!("{} notes selected", self.selection.len())));
-            }
             Command::SelectAll => {
                 let track = self.track().ok_or(EditError::NoTracks)?;
                 self.selection = select::all_ids(track);
@@ -458,7 +368,6 @@ impl Editor {
             }
             Command::ClearSelection => {
                 self.selection.clear();
-                self.reset_select_state();
                 ev.push(EditorEvent::Status("selection cleared".to_string()));
             }
             Command::SelectBar => self.select_bar(n, &mut ev)?,
@@ -565,6 +474,7 @@ impl Editor {
 
             // -------------------------------------------------------------- clipboard
             Command::Copy => self.copy(&mut ev)?,
+            Command::Cut => self.cut(&mut ev)?,
             Command::Paste => self.paste(n, &mut ev)?,
             Command::Duplicate => self.duplicate(n, &mut ev)?,
 
@@ -669,8 +579,11 @@ impl Editor {
                 ev.push(EditorEvent::Transport(TransportRequest::Play { from: self.cursor.tick }));
             }
 
-            // -------------------------------------------------------------- mode
-            Command::EnterCommandLine => self.enter_mode(Mode::CommandLine, &mut ev),
+            // -------------------------------------------------------------- command line
+            Command::EnterCommandLine => ev.push(EditorEvent::OpenCommandLine),
+        }
+        if !matches!(cmd, Command::ExtendSelection { .. }) {
+            self.box_anchor = None;
         }
         if self.committed {
             self.last_edit = Some(cmd.clone());
@@ -686,7 +599,22 @@ impl Editor {
         Ok(ev)
     }
 
-    fn move_cursor(&mut self, dir: Dir, unit: Unit, n: u32, ev: &mut Vec<EditorEvent>) -> Result<(), EditError> {
+    fn move_cursor(&mut self, dir: Dir, unit: Unit, n: u32) -> Result<(), EditError> {
+        self.step_cursor(dir, unit, n)?;
+        self.selection.clear();
+        Ok(())
+    }
+
+    fn extend_selection(&mut self, dir: Dir, unit: Unit, n: u32, ev: &mut Vec<EditorEvent>) -> Result<(), EditError> {
+        let anchor = self.box_anchor.unwrap_or(self.cursor);
+        self.step_cursor(dir, unit, n)?;
+        self.box_anchor = Some(anchor);
+        self.refresh_box_selection();
+        ev.push(EditorEvent::Status(format!("{} in box", self.selection.len())));
+        Ok(())
+    }
+
+    fn step_cursor(&mut self, dir: Dir, unit: Unit, n: u32) -> Result<(), EditError> {
         match dir {
             Dir::Left | Dir::Right => {
                 let step = self.time_step(unit, dir)?.mul(u64::from(n));
@@ -703,11 +631,6 @@ impl Editor {
                     _ => p.saturating_sub(step) as u8,
                 };
             }
-        }
-        if self.mode == Mode::Select {
-            self.refresh_box_selection();
-            let what = if self.select_subtract { "selected" } else { "in box" };
-            ev.push(EditorEvent::Status(format!("{} notes {what}", self.selection.len())));
         }
         Ok(())
     }
@@ -788,35 +711,6 @@ impl Editor {
             pitch_name(note.pitch)
         )));
         Ok(())
-    }
-
-    fn enter_mode(&mut self, mode: Mode, ev: &mut Vec<EditorEvent>) {
-        match mode {
-            Mode::Select => self.enter_select(false, false, ev),
-            Mode::Normal => {
-                if self.mode == Mode::Select {
-                    // cancel: a plain box is dropped, a subtract box is put back
-                    self.selection = if self.select_subtract { std::mem::take(&mut self.select_base) } else { BTreeSet::new() };
-                }
-                self.reset_select_state();
-                self.set_mode(Mode::Normal, ev);
-            }
-            Mode::Move | Mode::CommandLine => {
-                self.reset_select_state();
-                self.set_mode(mode, ev);
-            }
-        }
-    }
-
-    /// Enters Select mode with the box anchored at the cursor. `all_pitches` makes it
-    /// a time range; `subtract` makes it remove from the current selection.
-    fn enter_select(&mut self, all_pitches: bool, subtract: bool, ev: &mut Vec<EditorEvent>) {
-        self.select_anchor = Some(self.cursor);
-        self.select_all_pitches = all_pitches;
-        self.select_subtract = subtract;
-        self.select_base = if subtract { self.selection.clone() } else { BTreeSet::new() };
-        self.set_mode(Mode::Select, ev);
-        self.refresh_box_selection();
     }
 
     /// Replaces the selection with `ids`, or fails (leaving it) if there are none.
@@ -1175,6 +1069,18 @@ impl Editor {
         Ok(())
     }
 
+    fn cut(&mut self, ev: &mut Vec<EditorEvent>) -> Result<(), EditError> {
+        let ids = self.target_ids()?;
+        self.clipboard = edit_ops::clip_relative(&self.song.tracks[self.track_index], &ids);
+        self.commit(None);
+        let removed = self.track_mut().remove_notes(&ids);
+        for id in &ids {
+            self.selection.remove(id);
+        }
+        ev.push(EditorEvent::SongChanged);
+        ev.push(EditorEvent::Status(format!("cut {removed} note{}", plural(removed))));
+        Ok(())
+    }
     fn paste(&mut self, n: u32, ev: &mut Vec<EditorEvent>) -> Result<(), EditError> {
         if self.clipboard.is_empty() {
             return Err(EditError::ClipboardEmpty);
@@ -1282,7 +1188,7 @@ impl Editor {
     fn show_track(&mut self, index: usize) {
         self.track_index = index;
         self.selection.clear();
-        self.reset_select_state();
+        self.box_anchor = None;
     }
 
     fn current_track(&self) -> Result<&Track, EditError> {
@@ -1690,15 +1596,6 @@ mod tests {
         assert_eq!(ordinal(101), "101st");
         assert!((zoom_factor(2.0, 3) - 8.0).abs() < 1e-6);
         assert!((zoom_factor(2.0, 1) - 2.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn mode_names_round_trip() {
-        for m in Mode::ALL {
-            assert_eq!(Mode::from_name(m.name()), Some(m));
-            assert!(!m.to_string().is_empty());
-        }
-        assert_eq!(Mode::from_name("bogus"), None);
     }
 
     #[test]

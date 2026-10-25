@@ -24,7 +24,7 @@ struct Cli {
 enum Cmd {
     /// Feed a key string to the headless editor and print the resulting song.
     ///
-    /// Example: mp keys "n Right n Right n v Left Left Enter Shift+Up"
+    /// Example: mp keys "n Right n Right n Shift+Left Shift+Left Alt+Up"
     Keys {
         keys: String,
         /// Start from this .ron project instead of an empty song.
@@ -99,8 +99,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                 println!("event: {event:?}");
             }
             println!(
-                "mode {}  cursor {}:{}  selected {}",
-                editor.mode,
+                "cursor {}:{}  selected {}",
                 editor.cursor.tick.get(),
                 editor.cursor.pitch,
                 editor.selection.len()

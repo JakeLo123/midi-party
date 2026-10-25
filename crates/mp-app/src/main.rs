@@ -24,7 +24,7 @@ use mp_audio::render::{render_song, write_audio_file, RenderOptions};
 use mp_audio::{render_song_from, SoundFontSynth, Synth};
 use mp_core::{
     cmdline, default_keymap, feed_one, midi_file, pitch_name, project, try_drive_with, Command, Cursor, DriveError,
-    Editor, EditorEvent, KeyChord, Keymap, Mode, Song, Tick, TransportRequest, ViewRequest, DEFAULT_KEYMAP_TOML,
+    Editor, EditorEvent, KeyChord, Keymap, Song, Tick, TransportRequest, ViewRequest, DEFAULT_KEYMAP_TOML,
 };
 use rustysynth::SoundFont;
 
@@ -199,7 +199,10 @@ fn load_keymap(path: &Path) -> (Keymap, Option<String>) {
         Err(e) => return (default_keymap(), Some(format!("keymap.toml: {e} (using defaults)"))),
     };
     match Keymap::from_toml_str(&merged) {
-        Ok(k) => (k, None),
+        Ok(k) => {
+            let status = (!k.warnings().is_empty()).then(|| format!("keymap.toml: {}", k.warnings().join("; ")));
+            (k, status)
+        }
         Err(e) => (default_keymap(), Some(format!("keymap.toml: {e} (using defaults)"))),
     }
 }
@@ -405,7 +408,7 @@ impl App {
         let mut events = Vec::new();
         match feed_one(&mut self.editor, &mut self.keymap, chord, &mut events) {
             Ok(()) => {}
-            Err(DriveError::Unbound { key, mode }) => self.status = format!("{key} is not bound in {mode} mode"),
+            Err(DriveError::Unbound { key }) => self.status = format!("{key} is not bound"),
             Err(DriveError::Edit { key, source }) => self.status = format!("{key}: {source}"),
             Err(other) => self.status = other.to_string(),
         }
@@ -426,8 +429,7 @@ impl App {
                         Ok(String::new())
                     });
                 }
-                EditorEvent::ModeChanged(Mode::CommandLine) => self.cmdline = Some(String::new()),
-                EditorEvent::ModeChanged(_) => {}
+                EditorEvent::OpenCommandLine => self.cmdline = Some(String::new()),
                 EditorEvent::Status(s) => self.status = s,
                 EditorEvent::Transport(request) => {
                     let secs = |t: Tick| self.tick_seconds(t);
@@ -470,12 +472,14 @@ impl App {
             RollAction::SetCursor { tick, pitch } => {
                 self.editor.cursor = Cursor { tick: Tick(tick), pitch };
                 self.editor.selection.clear();
+                self.editor.box_anchor = None;
                 self.editor.focus = None;
             }
             RollAction::SetCursorTick { tick } => self.editor.cursor.tick = Tick(tick),
             RollAction::ClickNote { id, toggle } => {
                 if let Some(note) = self.editor.track().and_then(|t| t.note(id)).copied() {
                     self.editor.cursor = Cursor { tick: note.start, pitch: note.pitch };
+                    self.editor.box_anchor = None;
                     if toggle {
                         if !self.editor.selection.remove(&id) {
                             self.editor.selection.insert(id);
@@ -506,6 +510,7 @@ impl App {
                 self.execute(&Command::ChangeLength { delta_steps: grid_steps });
             }
             RollAction::BoxSelect { t0, t1, p_lo, p_hi, add } => {
+                self.editor.box_anchor = None;
                 if !add {
                     self.editor.selection.clear();
                 }
@@ -537,20 +542,11 @@ impl App {
 
     // ----- command line -----
 
-    fn close_cmdline(&mut self) -> Option<String> {
-        if self.editor.mode == Mode::CommandLine {
-            self.editor.mode = Mode::Normal;
-        }
-        self.cmdline.take()
-    }
-
     fn handle_cmdline_chord(&mut self, text: &str, ctx: &egui::Context) {
         match text {
-            "Escape" => {
-                self.close_cmdline();
-            }
+            "Escape" => self.cmdline = None,
             "Enter" => {
-                if let Some(line) = self.close_cmdline() {
+                if let Some(line) = self.cmdline.take() {
                     self.run_command(line.trim());
                     if self.status == "quit" {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -862,7 +858,9 @@ impl App {
                 ui.label(text(format!(":{line}▏"), "status_fg"));
                 return;
             }
-            ui.label(text(format!(" {} ", e.mode.name().to_uppercase()), "status_mode").strong());
+            if e.box_anchor.is_some() {
+                ui.label(text(format!(" {} in box ", e.selection.len()), "status_mode").strong());
+            }
             let mut pending: Vec<String> = e.count.map(|c| c.to_string()).into_iter().collect();
             pending.extend(self.keymap.pending().iter().map(|k| k.to_string()));
             if !pending.is_empty() {
@@ -999,6 +997,8 @@ fn main() -> eframe::Result {
             .with_title("midi-party")
             .with_inner_size([1200.0, 720.0])
             .with_min_inner_size([640.0, 360.0]),
+        // Otherwise egui-winit turns Cmd+c/x/v into clipboard events and the keymap never sees them.
+        clipboard_shortcuts: false,
         ..Default::default()
     };
     eframe::run_native("midi-party", options, Box::new(move |cc| Ok(Box::new(App::new(cc, args)))))
@@ -1017,7 +1017,7 @@ mod keymap_overlay_tests {
 "#;
         let merged = merge_keymap_toml(user).unwrap();
         let keymap = Keymap::from_toml_str(&merged).unwrap();
-        let normal = keymap.bindings(Mode::Normal);
+        let normal = keymap.bindings();
         let find = |k: &str| normal.iter().find(|(keys, _)| keys == k).map(|(_, c)| c.name());
         assert_eq!(find("n"), Some("delete_selected"));
         assert_eq!(find("x"), None);
@@ -1030,14 +1030,24 @@ mod keymap_overlay_tests {
     fn vim_preset_moves_the_cursor_with_hjkl_and_keeps_the_rest() {
         let merged = merge_keymap_toml("preset = \"vim\"\n[normal]\n\"z\" = \"undo\"\n").unwrap();
         let keymap = Keymap::from_toml_str(&merged).unwrap();
-        let normal = keymap.bindings(Mode::Normal);
+        let normal = keymap.bindings();
         let find = |k: &str| normal.iter().find(|(keys, _)| keys == k).map(|(_, c)| c.name());
         assert_eq!(find("h"), Some("move_cursor"));
         assert_eq!(find("k"), Some("move_cursor"));
-        assert_eq!(find("Alt+h"), Some("humanize"));
+        assert_eq!(find("Ctrl+Alt+h"), Some("humanize"));
+        assert_eq!(find("Alt+h"), Some("move_selected"));
+        assert_eq!(find("Shift+l"), Some("extend_selection"));
         assert_eq!(find("z"), Some("undo"));
         assert_eq!(find("x"), Some("delete_selected"));
-        assert!(keymap.bindings(Mode::Move).iter().any(|(k, c)| k == "j" && c.name() == "move_selected"));
+    }
+
+    #[test]
+    fn retired_mode_tables_in_a_user_file_only_warn() {
+        let user = "[normal]\n\"z\" = \"undo\"\n\n[select]\n\"v\" = \"select_all\"\n\n[move]\n\"m\" = \"copy\"\n\n[command_line]\n\"Escape\" = \"undo\"\n";
+        let merged = merge_keymap_toml(user).unwrap();
+        let keymap = Keymap::from_toml_str(&merged).unwrap();
+        assert_eq!(keymap.warnings().len(), 3, "{:?}", keymap.warnings());
+        assert!(keymap.bindings().iter().any(|(k, c)| k == "z" && c.name() == "undo"));
     }
 
     #[test]
@@ -1050,6 +1060,6 @@ mod keymap_overlay_tests {
         let merged = merge_keymap_toml(KEYMAP_TEMPLATE).unwrap();
         let a = Keymap::from_toml_str(&merged).unwrap();
         let b = default_keymap();
-        assert_eq!(a.bindings(Mode::Normal).len(), b.bindings(Mode::Normal).len());
+        assert_eq!(a.bindings().len(), b.bindings().len());
     }
 }

@@ -26,8 +26,8 @@ pub fn default_keymap() -> Keymap {
 pub enum DriveError {
     #[error("cannot parse keys: {0}")]
     BadKeys(#[from] KeyParseError),
-    #[error("key {key} is not bound in {mode} mode")]
-    Unbound { key: String, mode: String },
+    #[error("key {key} is not bound")]
+    Unbound { key: String },
     #[error("key {key}: {source}")]
     Edit {
         key: String,
@@ -56,7 +56,7 @@ pub fn feed_one(
     chord: KeyChord,
     events: &mut Vec<EditorEvent>,
 ) -> Result<(), DriveError> {
-    match keymap.feed(editor.mode, chord) {
+    match keymap.feed(chord) {
         Resolution::Pending => Ok(()),
         Resolution::Count(d) => {
             editor.push_count_digit(d);
@@ -70,7 +70,7 @@ pub fn feed_one(
         }
         Resolution::Unbound => {
             editor.take_count();
-            Err(DriveError::Unbound { key: chord.to_string(), mode: editor.mode.to_string() })
+            Err(DriveError::Unbound { key: chord.to_string() })
         }
     }
 }

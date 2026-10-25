@@ -4,42 +4,34 @@
 #
 #     preset = "vim"
 #
-# Everything not listed here keeps its default binding. Keys that the defaults
-# used for other things (h = humanize, l = set length, i = invert selection)
-# move to Alt+h, Alt+l and Shift+i.
+# Everything not listed here keeps its default binding. h j k l move the cursor,
+# Shift+ grows the selection box, Alt+ moves the selected notes, Ctrl+ jumps a bar or
+# an octave (Cmd+h would hide the window on macOS). Humanize is Ctrl+Alt+h, set length
+# is Ctrl+Alt+l and invert selection is Shift+i, since h, l and i are taken by movement.
 
 [normal]
-"h"       = { cmd = "move_cursor", dir = "left",  unit = "grid" }
-"l"       = { cmd = "move_cursor", dir = "right", unit = "grid" }
-"j"       = { cmd = "move_cursor", dir = "down",  unit = "semitone" }
-"k"       = { cmd = "move_cursor", dir = "up",    unit = "semitone" }
-"Shift+h" = { cmd = "move_cursor", dir = "left",  unit = "bar" }
-"Shift+l" = { cmd = "move_cursor", dir = "right", unit = "bar" }
-"Shift+j" = { cmd = "move_cursor", dir = "down",  unit = "octave" }
-"Shift+k" = { cmd = "move_cursor", dir = "up",    unit = "octave" }
-"i"       = "insert_note"
-"y"       = "copy"
-"Shift+i" = "invert_selection"
-"Alt+h"   = { cmd = "humanize", velocity = 8, timing = 10 }
-"Alt+l"   = { cmd = "set_length", steps = 1 }
-
-[select]
-"h"       = { cmd = "move_cursor", dir = "left",  unit = "grid" }
-"l"       = { cmd = "move_cursor", dir = "right", unit = "grid" }
-"j"       = { cmd = "move_cursor", dir = "down",  unit = "semitone" }
-"k"       = { cmd = "move_cursor", dir = "up",    unit = "semitone" }
-"Shift+h" = { cmd = "move_cursor", dir = "left",  unit = "bar" }
-"Shift+l" = { cmd = "move_cursor", dir = "right", unit = "bar" }
-"Shift+j" = { cmd = "move_cursor", dir = "down",  unit = "octave" }
-"Shift+k" = { cmd = "move_cursor", dir = "up",    unit = "octave" }
-"y"       = "copy"
-
-[move]
-"h"       = { cmd = "move_selected", dir = "left",  unit = "grid" }
-"l"       = { cmd = "move_selected", dir = "right", unit = "grid" }
-"j"       = { cmd = "move_selected", dir = "down",  unit = "semitone" }
-"k"       = { cmd = "move_selected", dir = "up",    unit = "semitone" }
-"Shift+h" = { cmd = "move_selected", dir = "left",  unit = "bar" }
-"Shift+l" = { cmd = "move_selected", dir = "right", unit = "bar" }
-"Shift+j" = { cmd = "move_selected", dir = "down",  unit = "octave" }
-"Shift+k" = { cmd = "move_selected", dir = "up",    unit = "octave" }
+"h"           = { cmd = "move_cursor", dir = "left",  unit = "grid" }
+"l"           = { cmd = "move_cursor", dir = "right", unit = "grid" }
+"j"           = { cmd = "move_cursor", dir = "down",  unit = "semitone" }
+"k"           = { cmd = "move_cursor", dir = "up",    unit = "semitone" }
+"Ctrl+h"      = { cmd = "move_cursor", dir = "left",  unit = "bar" }
+"Ctrl+l"      = { cmd = "move_cursor", dir = "right", unit = "bar" }
+"Ctrl+j"      = { cmd = "move_cursor", dir = "down",  unit = "octave" }
+"Ctrl+k"      = { cmd = "move_cursor", dir = "up",    unit = "octave" }
+"Shift+h"     = { cmd = "extend_selection", dir = "left",  unit = "grid" }
+"Shift+l"     = { cmd = "extend_selection", dir = "right", unit = "grid" }
+"Shift+j"     = { cmd = "extend_selection", dir = "down",  unit = "semitone" }
+"Shift+k"     = { cmd = "extend_selection", dir = "up",    unit = "semitone" }
+"Alt+h"       = { cmd = "move_selected", dir = "left",  unit = "grid" }
+"Alt+l"       = { cmd = "move_selected", dir = "right", unit = "grid" }
+"Alt+j"       = { cmd = "move_selected", dir = "down",  unit = "semitone" }
+"Alt+k"       = { cmd = "move_selected", dir = "up",    unit = "semitone" }
+"Alt+Shift+h" = { cmd = "move_selected", dir = "left",  unit = "bar" }
+"Alt+Shift+l" = { cmd = "move_selected", dir = "right", unit = "bar" }
+"Alt+Shift+j" = { cmd = "move_selected", dir = "down",  unit = "octave" }
+"Alt+Shift+k" = { cmd = "move_selected", dir = "up",    unit = "octave" }
+"i"           = "insert_note"
+"y"           = "copy"
+"Shift+i"     = "invert_selection"
+"Ctrl+Alt+h"  = { cmd = "humanize", velocity = 8, timing = 10 }
+"Ctrl+Alt+l"  = { cmd = "set_length", steps = 1 }

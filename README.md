@@ -33,7 +33,7 @@ cargo run -p mp-cli -- render --sf2 assets/soundfonts/florestan-subset.sf2 --son
 
 ## Layout
 
-- `crates/mp-core` — song model, tempo/meter math, the `Command` enum (95 commands), keymap, undo, command-line parser, `.mid` and `.ron` files. Pure, 161 tests.
+- `crates/mp-core` — song model, tempo/meter math, the `Command` enum (91 commands), keymap, undo, command-line parser, `.mid` and `.ron` files.
 - `crates/mp-audio` — real-time engine (cpal + rustysynth), sequencer, offline WAV/MP3 render. The audio callback is tested to allocate nothing.
 - `crates/mp-app` — the egui window: piano roll, track panel, lane strip, status bar, cheat sheet, command line, keymap editor.
 - `crates/mp-cli` — `mp keys` / `mp render` for scripts and tests.

@@ -23,15 +23,6 @@ pub fn note_under_cursor(track: &Track, cursor: Cursor) -> Option<&Note> {
 pub fn box_ids(track: &Track, a: Cursor, b: Cursor, cell: Tick) -> BTreeSet<NoteId> {
     let lo_pitch = a.pitch.min(b.pitch);
     let hi_pitch = a.pitch.max(b.pitch);
-    box_ids_in_pitch_range(track, a, b, cell, lo_pitch, hi_pitch)
-}
-
-/// Like [`box_ids`] but spanning every pitch: a time range only.
-pub fn time_box_ids(track: &Track, a: Cursor, b: Cursor, cell: Tick) -> BTreeSet<NoteId> {
-    box_ids_in_pitch_range(track, a, b, cell, 0, u8::MAX)
-}
-
-fn box_ids_in_pitch_range(track: &Track, a: Cursor, b: Cursor, cell: Tick, lo_pitch: u8, hi_pitch: u8) -> BTreeSet<NoteId> {
     let lo_tick = a.tick.min(b.tick);
     let hi_tick = a.tick.max(b.tick).saturating_add(cell);
     track
@@ -162,9 +153,6 @@ mod tests {
         assert_eq!(ids, set(&[1, 2, 3]));
         assert_eq!(all_ids(t).len(), 4);
         assert_eq!(notes_with_ids(t, &all_ids(t)).len(), 4);
-        // a time box ignores pitch entirely
-        let ids = time_box_ids(t, Cursor { tick: Tick(960), pitch: 0 }, Cursor { tick: Tick(960), pitch: 0 }, Tick(240));
-        assert_eq!(ids, set(&[3, 4]));
     }
 
     #[test]

@@ -20,6 +20,12 @@ pub struct Chord {
     pub cmd: bool,
 }
 
+impl Chord {
+    fn has_modifiers(&self, mods: Modifiers) -> bool {
+        self.shift == mods.shift && self.ctrl == mods.ctrl && self.alt == mods.alt && self.cmd == mods.mac_cmd
+    }
+}
+
 impl fmt::Display for Chord {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.ctrl {
@@ -135,8 +141,13 @@ impl InputState {
 
     /// Collects this frame's key presses and typed text. Call once per frame.
     pub fn poll(&mut self, ctx: &egui::Context, now: Instant) -> Polled {
-        let events = ctx.input(|i| i.events.clone());
+        let (events, mods) = ctx.input(|i| (i.events.clone(), i.modifiers));
         let mut out = Polled::default();
+        // Modifier keys produce no key events of their own, so a held `Shift+Right`
+        // would keep repeating as `Shift+Right` after Shift is released. Stop instead.
+        if self.held.as_ref().is_some_and(|(h, _)| !h.has_modifiers(mods)) {
+            self.held = None;
+        }
         for event in events {
             match event {
                 Event::Text(t) => out.text.push_str(&t),
