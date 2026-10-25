@@ -93,6 +93,10 @@ pub enum ViewRequest {
     ZoomTime(f32),
     /// Multiply the row height by this factor (> 1 makes rows taller).
     ZoomRows(f32),
+    /// Show the piano roll under the tracks area if hidden, hide it if shown.
+    TogglePianoRoll,
+    /// Zoom the tracks area so the whole song fits.
+    FitTracksToSong,
 }
 
 /// What happened as a result of [`Editor::execute`]. The app forwards these to the
@@ -502,6 +506,8 @@ impl Editor {
             Command::ZoomRowsOut => {
                 ev.push(EditorEvent::View(ViewRequest::ZoomRows(1.0 / zoom_factor(ZOOM_ROWS_STEP, n))));
             }
+            Command::TogglePianoRoll => ev.push(EditorEvent::View(ViewRequest::TogglePianoRoll)),
+            Command::ZoomToFit => ev.push(EditorEvent::View(ViewRequest::FitTracksToSong)),
             Command::ToggleCheatSheet => ev.push(EditorEvent::ToggleCheatSheet),
 
             // -------------------------------------------------------------- track
@@ -1185,7 +1191,7 @@ impl Editor {
 
     /// Shows track `index` (already valid): switching tracks drops the selection and
     /// any box in progress, since the ids belong to the old track.
-    fn show_track(&mut self, index: usize) {
+    pub fn show_track(&mut self, index: usize) {
         self.track_index = index;
         self.selection.clear();
         self.box_anchor = None;

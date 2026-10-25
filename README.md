@@ -22,7 +22,8 @@ On first run the app writes `~/.config/midi-party/keymap.toml` and `theme.toml`.
 Both are *overlays* on the built-in defaults: anything in them overrides, the
 rest keeps tracking updates. `preset = "vim"` at the top of `keymap.toml`
 switches cursor movement to `h j k l`. Set a key to `"unbind"` to remove it.
-Both files reload the moment you save them.
+Both files reload the moment you save them. `Cmd+e` hides and shows the piano
+roll under the tracks area, and `Cmd+0` fits the whole song in the tracks area again.
 
 ## Headless tools
 
@@ -33,9 +34,9 @@ cargo run -p mp-cli -- render --sf2 assets/soundfonts/florestan-subset.sf2 --son
 
 ## Layout
 
-- `crates/mp-core` — song model, tempo/meter math, the `Command` enum (91 commands), keymap, undo, command-line parser, `.mid` and `.ron` files.
+- `crates/mp-core` — song model, tempo/meter math, the `Command` enum (93 commands), keymap, undo, command-line parser, `.mid` and `.ron` files.
 - `crates/mp-audio` — real-time engine (cpal + rustysynth), sequencer, offline WAV/MP3 render. The audio callback is tested to allocate nothing.
-- `crates/mp-app` — the egui window: piano roll, track panel, lane strip, status bar, cheat sheet, command line, keymap editor.
+- `crates/mp-app` — the egui window: tracks area, piano roll, lane strip, status bar, cheat sheet, command line, keymap editor.
 - `crates/mp-cli` — `mp keys` / `mp render` for scripts and tests.
 
 ## Versions
