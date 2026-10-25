@@ -24,7 +24,7 @@ use mp_audio::render::{render_song, write_audio_file, RenderOptions};
 use mp_audio::{render_song_from, SoundFontSynth, Synth};
 use mp_core::{
     cmdline, default_keymap, feed_one, midi_file, pitch_name, project, try_drive_with, Command, Cursor, DriveError,
-    Editor, EditorEvent, KeyChord, Keymap, Mode, Song, Tick, TransportRequest, ViewRequest, DEFAULT_KEYMAP_TOML,
+    Editor, EditorEvent, KeyChord, Keymap, Song, Tick, TransportRequest, ViewRequest, DEFAULT_KEYMAP_TOML,
 };
 use rustysynth::SoundFont;
 
@@ -429,8 +429,7 @@ impl App {
                         Ok(String::new())
                     });
                 }
-                EditorEvent::ModeChanged(Mode::CommandLine) => self.cmdline = Some(String::new()),
-                EditorEvent::ModeChanged(_) => {}
+                EditorEvent::OpenCommandLine => self.cmdline = Some(String::new()),
                 EditorEvent::Status(s) => self.status = s,
                 EditorEvent::Transport(request) => {
                     let secs = |t: Tick| self.tick_seconds(t);
@@ -543,20 +542,11 @@ impl App {
 
     // ----- command line -----
 
-    fn close_cmdline(&mut self) -> Option<String> {
-        if self.editor.mode == Mode::CommandLine {
-            self.editor.mode = Mode::Normal;
-        }
-        self.cmdline.take()
-    }
-
     fn handle_cmdline_chord(&mut self, text: &str, ctx: &egui::Context) {
         match text {
-            "Escape" => {
-                self.close_cmdline();
-            }
+            "Escape" => self.cmdline = None,
             "Enter" => {
-                if let Some(line) = self.close_cmdline() {
+                if let Some(line) = self.cmdline.take() {
                     self.run_command(line.trim());
                     if self.status == "quit" {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1027,7 +1017,7 @@ mod keymap_overlay_tests {
 "#;
         let merged = merge_keymap_toml(user).unwrap();
         let keymap = Keymap::from_toml_str(&merged).unwrap();
-        let normal = keymap.bindings(Mode::Normal);
+        let normal = keymap.bindings();
         let find = |k: &str| normal.iter().find(|(keys, _)| keys == k).map(|(_, c)| c.name());
         assert_eq!(find("n"), Some("delete_selected"));
         assert_eq!(find("x"), None);
@@ -1040,7 +1030,7 @@ mod keymap_overlay_tests {
     fn vim_preset_moves_the_cursor_with_hjkl_and_keeps_the_rest() {
         let merged = merge_keymap_toml("preset = \"vim\"\n[normal]\n\"z\" = \"undo\"\n").unwrap();
         let keymap = Keymap::from_toml_str(&merged).unwrap();
-        let normal = keymap.bindings(Mode::Normal);
+        let normal = keymap.bindings();
         let find = |k: &str| normal.iter().find(|(keys, _)| keys == k).map(|(_, c)| c.name());
         assert_eq!(find("h"), Some("move_cursor"));
         assert_eq!(find("k"), Some("move_cursor"));
@@ -1053,12 +1043,11 @@ mod keymap_overlay_tests {
 
     #[test]
     fn retired_mode_tables_in_a_user_file_only_warn() {
-        let user = "[normal]\n\"z\" = \"undo\"\n\n[select]\n\"v\" = \"select_all\"\n\n[move]\n\"m\" = \"copy\"\n";
+        let user = "[normal]\n\"z\" = \"undo\"\n\n[select]\n\"v\" = \"select_all\"\n\n[move]\n\"m\" = \"copy\"\n\n[command_line]\n\"Escape\" = \"undo\"\n";
         let merged = merge_keymap_toml(user).unwrap();
         let keymap = Keymap::from_toml_str(&merged).unwrap();
-        assert_eq!(keymap.warnings().len(), 2, "{:?}", keymap.warnings());
-        assert!(keymap.bindings(Mode::Normal).iter().any(|(k, c)| k == "z" && c.name() == "undo"));
-        assert_eq!(keymap.modes(), vec![Mode::Normal]);
+        assert_eq!(keymap.warnings().len(), 3, "{:?}", keymap.warnings());
+        assert!(keymap.bindings().iter().any(|(k, c)| k == "z" && c.name() == "undo"));
     }
 
     #[test]
@@ -1071,6 +1060,6 @@ mod keymap_overlay_tests {
         let merged = merge_keymap_toml(KEYMAP_TEMPLATE).unwrap();
         let a = Keymap::from_toml_str(&merged).unwrap();
         let b = default_keymap();
-        assert_eq!(a.bindings(Mode::Normal).len(), b.bindings(Mode::Normal).len());
+        assert_eq!(a.bindings().len(), b.bindings().len());
     }
 }

@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 
 use crate::cmdline;
 use crate::editor::{
-    Command, Cursor, CycleDir, Dir, EditError, EditorEvent, Mode, TransportRequest, Unit, ViewRequest, ZOOM_ROWS_STEP,
+    Command, Cursor, CycleDir, Dir, EditError, EditorEvent, TransportRequest, Unit, ViewRequest, ZOOM_ROWS_STEP,
     ZOOM_TIME_STEP,
 };
 use crate::keymap::{parse_sequence, Keymap, Resolution};
@@ -118,7 +118,7 @@ fn bound(keymap: &Keymap, keys: &str) -> Command {
     let mut k = keymap.clone();
     let mut cmd = None;
     for chord in parse_sequence(keys).unwrap() {
-        match k.feed(Mode::Normal, chord) {
+        match k.feed(chord) {
             Resolution::Command(c) => cmd = Some(c),
             Resolution::Pending => {}
             other => panic!("{keys}: {other:?}"),
@@ -136,7 +136,7 @@ fn default_keymap_loads_and_every_binding_is_a_real_command() {
     // a note so note-targeting commands have something to act on
     let n = song.new_note(Tick(0), Tick(G), 60, 100);
     song.tracks[0].insert_note(n);
-    let bindings = keymap.bindings(Mode::Normal);
+    let bindings = keymap.bindings();
     assert!(bindings.len() > 100, "{} bindings", bindings.len());
     for (keys, cmd) in &bindings {
         assert!(!cmd.describe().is_empty(), "{keys} -> {cmd:?}");
@@ -146,7 +146,6 @@ fn default_keymap_loads_and_every_binding_is_a_real_command() {
         e.selection.insert(n.id);
         let _ = e.execute(cmd, None);
     }
-    assert!(keymap.bindings(Mode::CommandLine).is_empty(), "the command line takes text, not keys");
     // arrows: plain moves the cursor, Shift grows the box, Alt moves notes, Cmd jumps
     assert_eq!(bound(&keymap, "Right"), Command::MoveCursor { dir: Dir::Right, unit: Unit::Grid });
     assert_eq!(bound(&keymap, "Ctrl+Right"), Command::MoveCursor { dir: Dir::Right, unit: Unit::Beat });
@@ -208,11 +207,11 @@ fn default_keymap_loads_and_every_binding_is_a_real_command() {
         (Command::SustainDown, "Ctrl+Shift+d"),
         (Command::SustainUp, "Ctrl+Shift+u"),
     ] {
-        assert_eq!(keymap.key_for(Mode::Normal, &cmd).as_deref(), Some(key), "{}", cmd.name());
+        assert_eq!(keymap.key_for(&cmd).as_deref(), Some(key), "{}", cmd.name());
     }
     // the plan's original keys are untouched
     for (cmd, key) in [(Command::NextTrack, "t"), (Command::PrevTrack, "Shift+t"), (Command::Duplicate, "d")] {
-        assert_eq!(keymap.key_for(Mode::Normal, &cmd).as_deref(), Some(key), "{}", cmd.name());
+        assert_eq!(keymap.key_for(&cmd).as_deref(), Some(key), "{}", cmd.name());
     }
     // the letters keep working next to their Cmd aliases; bindings are kept in key
     // order, so key_for (the cheat sheet) names the Cmd alias first
@@ -225,7 +224,7 @@ fn default_keymap_loads_and_every_binding_is_a_real_command() {
     ] {
         assert_eq!(bound(&keymap, letter), cmd, "{letter}");
         assert_eq!(bound(&keymap, alias), cmd, "{alias}");
-        assert_eq!(keymap.key_for(Mode::Normal, &cmd).as_deref(), Some(alias), "{}", cmd.name());
+        assert_eq!(keymap.key_for(&cmd).as_deref(), Some(alias), "{}", cmd.name());
     }
     // command-line-only commands have no key
     for cmd in [
@@ -241,12 +240,12 @@ fn default_keymap_loads_and_every_binding_is_a_real_command() {
         Command::RampLane { from: 0, to: 127 },
         Command::PedalSelection,
     ] {
-        assert_eq!(keymap.key_for(Mode::Normal, &cmd), None, "{}", cmd.name());
+        assert_eq!(keymap.key_for(&cmd), None, "{}", cmd.name());
         assert!(cmdline::usage(cmd.name()).is_some(), "{}", cmd.name());
     }
     for key in ["v", "m", "Shift+v", "Ctrl+Up", "Ctrl+Down"] {
         let chord = parse_sequence(key).unwrap().into_iter().next().unwrap();
-        assert_eq!(keymap.clone().feed(Mode::Normal, chord), Resolution::Unbound, "{key} must stay unbound by default");
+        assert_eq!(keymap.clone().feed(chord), Resolution::Unbound, "{key} must stay unbound by default");
     }
 }
 
@@ -431,8 +430,6 @@ fn shift_arrows_box_select() {
     let mut e = Editor::new(song3());
     let mut k = km();
     let ev = drive_with(&mut e, &mut k, "Shift+Right");
-    assert_eq!(e.mode, Mode::Normal, "no mode change");
-    assert!(!ev.iter().any(|e| matches!(e, EditorEvent::ModeChanged(_))));
     assert_eq!(e.box_anchor, Some(Editor::new(song3()).cursor), "the anchor is where the cursor started");
     assert_eq!(e.cursor.tick, Tick(G), "the cursor moves");
     assert_eq!(ids(&e), vec![1], "the anchor cell already selects the note at the cursor");
@@ -483,7 +480,6 @@ fn escape_clears_box_selection() {
     drive_with(&mut e, &mut k, "4 Shift+Right 7 Shift+Up");
     assert_eq!(ids(&e), vec![1, 2, 3]);
     let ev = drive_with(&mut e, &mut k, "Escape");
-    assert_eq!(e.mode, Mode::Normal);
     assert!(e.selection.is_empty());
     assert_eq!(e.box_anchor, None);
     assert_eq!(status(&ev), vec!["selection cleared"]);
@@ -550,7 +546,6 @@ fn alt_arrows_move_selected_notes_in_time() {
     let mut k = km();
     drive_with(&mut e, &mut k, "a");
     let ev = drive_with(&mut e, &mut k, "Alt+Right");
-    assert_eq!(e.mode, Mode::Normal);
     assert_eq!(starts(&e), vec![G, 2 * G, 5 * G]);
     assert_eq!(e.cursor.tick, Tick(G), "cursor follows the notes");
     assert_eq!(ids(&e), vec![1, 2, 3], "the notes stay selected");
@@ -1522,23 +1517,9 @@ fn view_and_app_commands_only_emit_events() {
     assert_eq!(drive_with(&mut e, &mut k, "Cmd+Shift+="), vec![EditorEvent::View(ViewRequest::ZoomRows(ZOOM_ROWS_STEP))]);
     assert_eq!(drive_with(&mut e, &mut k, "Cmd+Shift+-"), vec![EditorEvent::View(ViewRequest::ZoomRows(1.0 / ZOOM_ROWS_STEP))]);
     let ev = drive_with(&mut e, &mut k, "Shift+;");
-    assert_eq!(e.mode, Mode::CommandLine);
-    assert_eq!(ev, vec![EditorEvent::ModeChanged(Mode::CommandLine)]);
+    assert_eq!(ev, vec![EditorEvent::OpenCommandLine]);
     assert_eq!(e.undo.undo_depth(), 0);
     assert!(e.last_edit.is_none());
-    let ev = e.execute(&Command::EnterCommandLine, None).unwrap();
-    assert!(ev.is_empty(), "no event when the mode does not change");
-    // while in CommandLine mode the keymap is bypassed; the app parses text, executes
-    // it, and puts the mode back itself
-    let err = try_drive_with(&mut e, &mut k, "n").unwrap_err();
-    assert_eq!(err, DriveError::Unbound { key: "n".into() });
-    assert!(
-        matches!(cmdline::parse("mode normal"), Err(crate::CmdLineError::UnknownCommand(_))),
-        "no mode command"
-    );
-    e.mode = Mode::Normal;
-    drive_with(&mut e, &mut k, "n");
-    assert_eq!(e.undo.undo_depth(), 1);
 }
 
 #[test]

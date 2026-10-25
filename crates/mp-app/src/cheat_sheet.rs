@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use egui::{Align2, FontId, RichText, Stroke, Vec2};
-use mp_core::{Keymap, Mode};
+use mp_core::Keymap;
 
 use crate::theme::Theme;
 
@@ -75,7 +75,7 @@ type Group = (String, Vec<(String, String)>);
 /// Every binding grouped by category, rows sorted, with the app's own keys appended.
 fn groups(keymap: &Keymap) -> Vec<Group> {
     let mut groups: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
-    for (keys, cmd) in keymap.bindings(Mode::Normal) {
+    for (keys, cmd) in keymap.bindings() {
         groups.entry(cmd.category().to_string().to_lowercase()).or_default().push((keys, cmd.describe()));
     }
     groups.entry("app".into()).or_default().extend(APP_BINDINGS.iter().map(|(k, d)| (k.to_string(), d.to_string())));

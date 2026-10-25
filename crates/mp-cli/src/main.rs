@@ -99,8 +99,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                 println!("event: {event:?}");
             }
             println!(
-                "mode {}  cursor {}:{}  selected {}",
-                editor.mode,
+                "cursor {}:{}  selected {}",
                 editor.cursor.tick.get(),
                 editor.cursor.pitch,
                 editor.selection.len()

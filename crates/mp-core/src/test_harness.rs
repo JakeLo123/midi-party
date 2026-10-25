@@ -56,7 +56,7 @@ pub fn feed_one(
     chord: KeyChord,
     events: &mut Vec<EditorEvent>,
 ) -> Result<(), DriveError> {
-    match keymap.feed(editor.mode, chord) {
+    match keymap.feed(chord) {
         Resolution::Pending => Ok(()),
         Resolution::Count(d) => {
             editor.push_count_digit(d);

@@ -92,7 +92,6 @@ pub enum Category {
     Clipboard,
     Transport,
     View,
-    Mode,
     /// Tracks and the mixer: add/remove/reorder, volume, pan, mute, solo, instrument.
     Track,
     /// Controller lanes: sustain, pitch bend, mod wheel, volume and pan automation.
@@ -108,7 +107,6 @@ impl fmt::Display for Category {
             Category::Clipboard => "Clipboard",
             Category::Transport => "Transport",
             Category::View => "View",
-            Category::Mode => "Mode",
             Category::Track => "Track",
             Category::Lane => "Lane",
         })
@@ -739,9 +737,9 @@ impl Command {
             | Command::ZoomOut
             | Command::ZoomRowsIn
             | Command::ZoomRowsOut
-            | Command::ToggleCheatSheet => Category::View,
+            | Command::ToggleCheatSheet
+            | Command::EnterCommandLine => Category::View,
             Command::Play | Command::Stop | Command::TogglePlay | Command::PlayFromCursor => Category::Transport,
-            Command::EnterCommandLine => Category::Mode,
             Command::AddTrack
             | Command::RemoveTrack
             | Command::DuplicateTrack
@@ -779,7 +777,7 @@ impl Command {
             Category::Edit | Category::Track => true,
             Category::Clipboard => !matches!(self, Command::Copy),
             Category::Lane => !matches!(self, Command::ShowLane { .. } | Command::CycleLane),
-            Category::Cursor | Category::Selection | Category::Transport | Category::View | Category::Mode => false,
+            Category::Cursor | Category::Selection | Category::Transport | Category::View => false,
         }
     }
 

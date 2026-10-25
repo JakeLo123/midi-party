@@ -3,16 +3,16 @@
 //! # From keypress to edit
 //!
 //! 1. The app (or the test harness) turns a keypress into a [`crate::KeyChord`].
-//! 2. [`crate::Keymap::feed`] maps the chord, in the current [`Mode`], to a
-//!    [`Command`] (or a count digit, or "still pending" for multi-key sequences).
+//! 2. [`crate::Keymap::feed`] maps the chord to a [`Command`] (or a count digit, or
+//!    "still pending" for multi-key sequences).
 //! 3. [`Editor::execute`] runs the command with the optional count. It is one
 //!    exhaustive `match`; nothing else in the program edits the song.
-//! 4. Commands that only move the cursor, change mode or change the selection return
+//! 4. Commands that only move the cursor or change the selection return
 //!    straight away and are not undoable. Commands that touch the [`Song`] first call
 //!    `commit` (which pushes an undo [`crate::Snapshot`] of the pre-edit state), then
 //!    mutate, then emit [`EditorEvent::SongChanged`] so the app can rebuild its audio
 //!    snapshot, plus [`EditorEvent::Audition`] for the notes worth hearing.
-//! 5. Transport, zoom and cheat-sheet commands change nothing here: they only emit an
+//! 5. Transport, zoom, cheat-sheet and command-line commands change nothing here: they only emit an
 //!    [`EditorEvent`] for the app, so their key bindings can live in the keymap file.
 //! 6. Errors ([`EditError`]) leave the editor exactly as it was and are meant to be
 //!    shown in the status bar.
@@ -26,7 +26,6 @@ pub mod edit_ops;
 pub mod select;
 
 use std::collections::BTreeSet;
-use std::fmt;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -75,44 +74,6 @@ impl Default for Cursor {
     }
 }
 
-/// Where keypresses go: the piano roll (one keymap table) or the command line.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Mode {
-    /// Keys go through the keymap.
-    #[default]
-    Normal,
-    /// Typing a `:command`; keys go to the text field, not the keymap.
-    CommandLine,
-}
-
-impl Mode {
-    /// All modes, in keymap-table order.
-    pub const ALL: [Mode; 2] = [Mode::Normal, Mode::CommandLine];
-
-    /// The snake_case name used as the TOML table name (`[normal]`).
-    pub fn name(self) -> &'static str {
-        match self {
-            Mode::Normal => "normal",
-            Mode::CommandLine => "command_line",
-        }
-    }
-
-    /// Parses a TOML table name.
-    pub fn from_name(s: &str) -> Option<Mode> {
-        Mode::ALL.into_iter().find(|m| m.name() == s)
-    }
-}
-
-impl fmt::Display for Mode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Mode::Normal => "Normal",
-            Mode::CommandLine => "Command",
-        })
-    }
-}
-
 /// What a transport command asks the app to do. The editor has no playhead, so every
 /// start position is a tick it chose (the cursor or the song start).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -142,8 +103,8 @@ pub enum EditorEvent {
     SongChanged,
     /// Play these notes once so the user hears what they just did.
     Audition(Vec<Note>),
-    /// The editing mode changed.
-    ModeChanged(Mode),
+    /// Open the `:` command line; the app owns the text field.
+    OpenCommandLine,
     /// A human-readable summary of the action, e.g. `"moved 3 notes +2 st"`.
     Status(String),
     /// A transport command was run; the app owns playback.
@@ -205,7 +166,6 @@ pub struct Editor {
     pub lane: Option<LaneKind>,
     pub cursor: Cursor,
     pub selection: BTreeSet<NoteId>,
-    pub mode: Mode,
     /// The count prefix typed so far (for the status bar); see [`Editor::push_count_digit`].
     pub count: Option<u32>,
     pub grid: Grid,
@@ -230,7 +190,7 @@ pub struct Editor {
 }
 
 impl Editor {
-    /// Wraps a song with the cursor at tick 0 / middle C, Normal mode, 1/16 grid.
+    /// Wraps a song with the cursor at tick 0 / middle C, 1/16 grid.
     pub fn new(song: Song) -> Self {
         Editor {
             song,
@@ -238,7 +198,6 @@ impl Editor {
             lane: None,
             cursor: Cursor::default(),
             selection: BTreeSet::new(),
-            mode: Mode::Normal,
             count: None,
             grid: Grid::default(),
             swing: 0,
@@ -348,13 +307,6 @@ impl Editor {
     fn refresh_box_selection(&mut self) {
         let (Some(anchor), Some(track)) = (self.box_anchor, self.track()) else { return };
         self.selection = select::box_ids(track, anchor, self.cursor, self.grid_ticks());
-    }
-
-    fn set_mode(&mut self, mode: Mode, events: &mut Vec<EditorEvent>) {
-        if self.mode != mode {
-            self.mode = mode;
-            events.push(EditorEvent::ModeChanged(mode));
-        }
     }
 
     /// Runs one command. `count` is the typed count prefix (`None` = no prefix); each
@@ -623,8 +575,8 @@ impl Editor {
                 ev.push(EditorEvent::Transport(TransportRequest::Play { from: self.cursor.tick }));
             }
 
-            // -------------------------------------------------------------- mode
-            Command::EnterCommandLine => self.set_mode(Mode::CommandLine, &mut ev),
+            // -------------------------------------------------------------- command line
+            Command::EnterCommandLine => ev.push(EditorEvent::OpenCommandLine),
         }
         if !matches!(cmd, Command::ExtendSelection { .. }) {
             self.box_anchor = None;
@@ -1640,15 +1592,6 @@ mod tests {
         assert_eq!(ordinal(101), "101st");
         assert!((zoom_factor(2.0, 3) - 8.0).abs() < 1e-6);
         assert!((zoom_factor(2.0, 1) - 2.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn mode_names_round_trip() {
-        for m in Mode::ALL {
-            assert_eq!(Mode::from_name(m.name()), Some(m));
-            assert!(!m.to_string().is_empty());
-        }
-        assert_eq!(Mode::from_name("bogus"), None);
     }
 
     #[test]
