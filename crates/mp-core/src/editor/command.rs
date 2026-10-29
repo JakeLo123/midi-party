@@ -336,6 +336,9 @@ pub enum Command {
     ToggleCheatSheet,
     /// Open the instrument picker for the current track. Count: ignored.
     OpenInstrumentPicker,
+    /// Ask the app to edit the current track's name in its header; the edit ends in
+    /// [`Command::RenameTrack`]. Count: ignored.
+    EditTrackName,
 
     // ------------------------------------------------------------------ track
     /// Add an empty track named "Track N" right after the current one and show it.
@@ -538,6 +541,7 @@ impl Command {
             Command::ZoomToFit => "zoom_to_fit",
             Command::ToggleCheatSheet => "toggle_cheat_sheet",
             Command::OpenInstrumentPicker => "open_instrument_picker",
+            Command::EditTrackName => "edit_track_name",
             Command::AddTrack => "add_track",
             Command::RemoveTrack => "remove_track",
             Command::DuplicateTrack => "duplicate_track",
@@ -671,6 +675,7 @@ impl Command {
             Command::ZoomToFit => "Fit the whole song in the tracks area".to_string(),
             Command::ToggleCheatSheet => "Show or hide the cheat sheet".to_string(),
             Command::OpenInstrumentPicker => "Choose this track's instrument".to_string(),
+            Command::EditTrackName => "Rename this track".to_string(),
             Command::AddTrack => "Add a track".to_string(),
             Command::RemoveTrack => "Remove this track".to_string(),
             Command::DuplicateTrack => "Duplicate this track".to_string(),
@@ -786,6 +791,7 @@ impl Command {
             | Command::ZoomToFit
             | Command::ToggleCheatSheet
             | Command::OpenInstrumentPicker
+            | Command::EditTrackName
             | Command::EnterCommandLine => Category::View,
             Command::Play
             | Command::Stop
@@ -907,6 +913,7 @@ impl Command {
             Command::ZoomToFit,
             Command::ToggleCheatSheet,
             Command::OpenInstrumentPicker,
+            Command::EditTrackName,
             Command::AddTrack,
             Command::RemoveTrack,
             Command::DuplicateTrack,

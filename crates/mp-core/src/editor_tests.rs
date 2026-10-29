@@ -1702,6 +1702,15 @@ fn rename_track_takes_the_rest_of_the_command_line() {
 }
 
 #[test]
+fn edit_track_name_asks_the_app_for_a_name_field_and_changes_nothing() {
+    let mut e = Editor::new(song3());
+    let ev = e.execute(&Command::EditTrackName, None).unwrap();
+    assert_eq!(ev, vec![EditorEvent::EditTrackName]);
+    assert_eq!(e.song, song3());
+    assert_eq!(e.undo.undo_depth(), 0);
+}
+
+#[test]
 fn track_volume_set_nudge_clamp_and_coalesce() {
     let mut e = Editor::new(song3());
     let mut k = km();

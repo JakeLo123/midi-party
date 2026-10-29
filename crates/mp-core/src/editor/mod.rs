@@ -122,6 +122,8 @@ pub enum EditorEvent {
     ToggleCheatSheet,
     /// Open the instrument picker for the current track; the app owns the list.
     OpenInstrumentPicker,
+    /// Edit the current track's name in place; the app owns the text field.
+    EditTrackName,
     /// A zoom command was run; the app owns the view.
     View(ViewRequest),
 }
@@ -508,6 +510,7 @@ impl Editor {
             Command::ZoomToFit => ev.push(EditorEvent::View(ViewRequest::FitTracksToSong)),
             Command::ToggleCheatSheet => ev.push(EditorEvent::ToggleCheatSheet),
             Command::OpenInstrumentPicker => ev.push(EditorEvent::OpenInstrumentPicker),
+            Command::EditTrackName => ev.push(EditorEvent::EditTrackName),
 
             // -------------------------------------------------------------- track
             Command::AddTrack => self.add_tracks(n, &mut ev)?,
