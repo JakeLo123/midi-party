@@ -54,6 +54,9 @@ impl Default for TrackMix {
     }
 }
 
+/// The MIDI channel General MIDI SoundFonts reserve for drum kits (channel 10, counted from 1).
+pub const DRUM_CHANNEL: u8 = 9;
+
 /// One track's events, sorted by time (and by [`EventKind::rank`] within an instant).
 #[derive(Clone, Debug, PartialEq)]
 pub struct RenderTrack {

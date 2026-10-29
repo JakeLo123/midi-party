@@ -62,6 +62,8 @@ fn key_name(key: Key) -> Option<String> {
         Key::PageUp => "PageUp",
         Key::PageDown => "PageDown",
         Key::Insert => "Insert",
+        // egui's symbol for this key is the typographic minus sign (U+2212), not the hyphen.
+        Key::Minus => "-",
         _ => "",
     };
     if !named.is_empty() {
@@ -193,7 +195,18 @@ mod tests {
         assert_eq!(key_name(Key::Num3).as_deref(), Some("3"));
         assert_eq!(key_name(Key::OpenBracket).as_deref(), Some("["));
         assert_eq!(key_name(Key::Equals).as_deref(), Some("="));
+        assert_eq!(key_name(Key::Minus).as_deref(), Some("-"));
         assert_eq!(key_name(Key::F5).as_deref(), Some("F5"));
+    }
+
+    #[test]
+    fn minus_key_reaches_its_bindings() {
+        let plain = chord_from(Key::Minus, Modifiers::default()).unwrap();
+        assert_eq!(plain.to_string(), "-");
+        let shifted = chord_from(Key::Minus, Modifiers { shift: true, ..Default::default() }).unwrap();
+        assert_eq!(shifted.to_string(), "Shift+-");
+        let cmd = chord_from(Key::Minus, Modifiers { mac_cmd: true, ..Default::default() }).unwrap();
+        assert_eq!(cmd.to_string(), "Cmd+-");
     }
 
     #[test]

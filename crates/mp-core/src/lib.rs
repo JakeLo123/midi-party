@@ -12,6 +12,7 @@
 
 pub mod cmdline;
 pub mod editor;
+pub mod gm;
 pub mod keymap;
 pub mod midi_file;
 pub mod project;
@@ -22,7 +23,7 @@ pub mod undo;
 
 pub use cmdline::CmdLineError;
 pub use editor::{
-    pan_label, pitch_name, Category, Command, Cursor, CycleDir, Dir, EditError, Editor, EditorEvent,
+    instrument_name, pan_label, pitch_name, Category, Command, Cursor, CycleDir, Dir, EditError, Editor, EditorEvent,
     TransportRequest, Unit, ViewRequest, DEFAULT_CURSOR_PITCH, INSERT_VELOCITY, MAX_CHANNEL, MAX_PRESET,
     MAX_TRACK_VOLUME_PERCENT, PITCH_BEND_NUDGE_SCALE, SUSTAIN_DOWN, SUSTAIN_UP, ZOOM_ROWS_STEP, ZOOM_TIME_STEP,
 };
@@ -30,10 +31,11 @@ pub use keymap::{
     parse_sequence, sequence_to_string, Binding, Key, KeyChord, KeyParseError, Keymap, KeymapError, Mods,
     Resolution, BINDINGS_TABLE,
 };
+pub use gm::{drum_kit_name, percussion_name, percussion_short, program_name, GM_PROGRAMS};
 pub use project::ProjectError;
 pub use song::{
-    Instrument, LaneKind, LaneKindParseError, LanePoint, Lanes, Note, NoteId, Song, Tick, Track, DEFAULT_MASTER_REVERB,
-    DEFAULT_PPQ,
+    is_default_track_name, Instrument, LaneKind, LaneKindParseError, LanePoint, Lanes, Note, NoteId, Song, Tick, Track,
+    DEFAULT_MASTER_REVERB, DEFAULT_PPQ, DRUM_CHANNEL,
 };
 pub use test_harness::{default_keymap, drive, drive_with, feed_one, try_drive_with, DriveError, DEFAULT_KEYMAP_TOML};
 pub use time::{

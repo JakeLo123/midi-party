@@ -337,6 +337,8 @@ pub enum Command {
     ZoomToFit,
     /// Ask the app to show or hide the cheat sheet. Count: ignored.
     ToggleCheatSheet,
+    /// Open the instrument picker for the current track. Count: ignored.
+    OpenInstrumentPicker,
 
     // ------------------------------------------------------------------ track
     /// Add an empty track named "Track N" right after the current one and show it.
@@ -396,6 +398,16 @@ pub enum Command {
     /// Select the previous SoundFont preset on the current track, wrapping 0 → 127.
     /// Count: that many presets.
     PrevPreset,
+    /// Play General MIDI program `preset` (0..=127) on the current track, keeping its
+    /// SoundFont. A drum track moves to a free melodic channel. Count: ignored.
+    SetPreset { preset: u16 },
+    /// Turn the current track into a drum track on MIDI channel 10 playing kit
+    /// program `kit` (0 = the standard kit); a track still named `Track N` becomes
+    /// `Drums`. Count: ignored.
+    SetDrumKit {
+        #[serde(default)]
+        kit: u16,
+    },
     /// Set the master reverb amount in percent, 0..=100 (clamped). Count: overrides
     /// `percent`.
     SetMasterReverb { percent: u8 },
@@ -520,6 +532,7 @@ impl Command {
             Command::TogglePianoRoll => "toggle_piano_roll",
             Command::ZoomToFit => "zoom_to_fit",
             Command::ToggleCheatSheet => "toggle_cheat_sheet",
+            Command::OpenInstrumentPicker => "open_instrument_picker",
             Command::AddTrack => "add_track",
             Command::RemoveTrack => "remove_track",
             Command::DuplicateTrack => "duplicate_track",
@@ -536,6 +549,8 @@ impl Command {
             Command::SetInstrument { .. } => "set_instrument",
             Command::NextPreset => "next_preset",
             Command::PrevPreset => "prev_preset",
+            Command::SetPreset { .. } => "set_preset",
+            Command::SetDrumKit { .. } => "set_drum_kit",
             Command::SetMasterReverb { .. } => "set_master_reverb",
             Command::ShowLane { .. } => "show_lane",
             Command::CycleLane => "cycle_lane",
@@ -647,6 +662,7 @@ impl Command {
             Command::TogglePianoRoll => "Show or hide the piano roll".to_string(),
             Command::ZoomToFit => "Fit the whole song in the tracks area".to_string(),
             Command::ToggleCheatSheet => "Show or hide the cheat sheet".to_string(),
+            Command::OpenInstrumentPicker => "Choose this track's instrument".to_string(),
             Command::AddTrack => "Add a track".to_string(),
             Command::RemoveTrack => "Remove this track".to_string(),
             Command::DuplicateTrack => "Duplicate this track".to_string(),
@@ -672,6 +688,11 @@ impl Command {
             },
             Command::NextPreset => "Next preset".to_string(),
             Command::PrevPreset => "Previous preset".to_string(),
+            Command::SetPreset { preset } => format!("Play {}", crate::gm::program_name(*preset)),
+            Command::SetDrumKit { kit } => match crate::gm::drum_kit_name(*kit) {
+                Some(name) => format!("Drums: {name} kit"),
+                None => format!("Drums: kit {kit}"),
+            },
             Command::SetMasterReverb { percent } => format!("Set master reverb to {percent}%"),
             Command::ShowLane { kind: Some(kind) } => format!("Show the {kind} lane"),
             Command::ShowLane { kind: None } => "Hide the lane".to_string(),
@@ -753,6 +774,7 @@ impl Command {
             | Command::TogglePianoRoll
             | Command::ZoomToFit
             | Command::ToggleCheatSheet
+            | Command::OpenInstrumentPicker
             | Command::EnterCommandLine => Category::View,
             Command::CursorToStart
             | Command::Play
@@ -775,6 +797,8 @@ impl Command {
             | Command::SetInstrument { .. }
             | Command::NextPreset
             | Command::PrevPreset
+            | Command::SetPreset { .. }
+            | Command::SetDrumKit { .. }
             | Command::SetMasterReverb { .. } => Category::Track,
             Command::ShowLane { .. }
             | Command::CycleLane
@@ -869,6 +893,7 @@ impl Command {
             Command::TogglePianoRoll,
             Command::ZoomToFit,
             Command::ToggleCheatSheet,
+            Command::OpenInstrumentPicker,
             Command::AddTrack,
             Command::RemoveTrack,
             Command::DuplicateTrack,
@@ -885,6 +910,8 @@ impl Command {
             Command::SetInstrument { path: None, bank: 0, preset: 0 },
             Command::NextPreset,
             Command::PrevPreset,
+            Command::SetPreset { preset: 33 },
+            Command::SetDrumKit { kit: 0 },
             Command::SetMasterReverb { percent: 25 },
             Command::ShowLane { kind: Some(LaneKind::Sustain) },
             Command::CycleLane,

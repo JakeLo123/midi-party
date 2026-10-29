@@ -354,6 +354,18 @@ impl Lanes {
     }
 }
 
+/// The MIDI channel General MIDI reserves for drum kits: channel 10, counted from 1.
+pub const DRUM_CHANNEL: u8 = 9;
+
+/// `true` for the names the app gives new tracks (`"Track 3"`), so a drum kit can
+/// rename such a track without touching one the user named.
+pub fn is_default_track_name(name: &str) -> bool {
+    match name.strip_prefix("Track ") {
+        Some(rest) => !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()),
+        None => false,
+    }
+}
+
 /// One instrument track: a continuous stream of notes plus mixer state and lanes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Track {
@@ -386,6 +398,11 @@ impl Track {
             notes: Vec::new(),
             lanes: Lanes::default(),
         }
+    }
+
+    /// Whether the track plays a drum kit: General MIDI puts those on channel 10.
+    pub fn is_drums(&self) -> bool {
+        self.channel == DRUM_CHANNEL
     }
 
     /// Restores the `(start, pitch, id)` ordering invariant. Idempotent and cheap.
@@ -520,6 +537,20 @@ impl Song {
     /// `"Track N"` for the next track added, where N is one more than the track count.
     pub fn next_track_name(&self) -> String {
         format!("Track {}", self.tracks.len() + 1)
+    }
+
+    /// The channel for a new melodic track: the lowest one no track uses, never the
+    /// drum channel, or the least-used one once all fifteen are taken. Distinct
+    /// channels keep exported `.mid` files honest for players with one synth.
+    pub fn free_channel(&self) -> u8 {
+        let mut used = [0usize; 16];
+        for track in &self.tracks {
+            used[usize::from(track.channel.min(15))] += 1;
+        }
+        (0..16u8)
+            .filter(|&c| c != DRUM_CHANNEL)
+            .min_by_key(|&c| (used[usize::from(c)], c))
+            .unwrap_or(0)
     }
 
     /// A copy of the track at `index` named `"<name> copy"`, its notes given fresh

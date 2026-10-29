@@ -24,3 +24,38 @@ Contents (SF2 format, 17 presets, all bank 0, General MIDI program numbers):
   61 Brass 1, 75 Pan Flute, 87 Bass & Lead, 90 Polysynth, 97 Soundtrack,
   109 Bagpipe, 116 Taiko.
 Note: the piano preset is at bank 0 program 2 (there is no preset at program 0).
+
+
+fluidr3-standard-kit.sf2
+========================
+
+Origin     : the "Standard" drum kit (bank 128, preset 0) cut out of FluidR3_GM.sf2,
+             Fluid (R3) SoundFont release 3, as packaged by Debian:
+             https://deb.debian.org/debian/pool/main/f/fluid-soundfont/fluid-soundfont_3.1.orig.tar.gz
+             Only that preset, the instruments and samples it uses, and their stereo
+             partners were kept; nothing was edited.
+Author     : Frank Wen <getfrank@gmail.com>
+License    : MIT (the original COPYING file is reproduced below)
+
+Copyright (c) 2000-2002, 2008 Frank Wen <getfrank@gmail.com>
+
+Permission is hereby granted, free of charge, to any person
+obtaining a copy of this software and associated documentation
+files (the "Software"), to deal in the Software without
+restriction, including without limitation the rights to use,
+copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE.

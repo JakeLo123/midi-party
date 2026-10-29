@@ -9,6 +9,7 @@ mod bridge;
 mod cheat_sheet;
 mod config;
 mod input;
+mod instrument_picker;
 mod keymap_editor;
 mod piano_roll;
 mod theme;
@@ -30,8 +31,10 @@ use mp_core::{
 use rustysynth::SoundFont;
 
 use crate::bridge::Audio;
+use mp_core::instrument_name;
 use crate::config::{ConfigEvent, ConfigWatcher};
 use crate::input::{Chord, InputState, KeyRepeat};
+use crate::instrument_picker::{Entry, InstrumentPicker, Outcome};
 use crate::keymap_editor::KeymapEditor;
 use crate::piano_roll::{RollAction, RollView};
 use crate::theme::Theme;
@@ -48,6 +51,9 @@ struct Args {
     /// Default SoundFont, used by tracks that have none of their own.
     #[arg(long, default_value = "assets/soundfonts/florestan-subset.sf2")]
     sf2: PathBuf,
+    /// Drum kit for channel-10 tracks, used when the default SoundFont has no kits.
+    #[arg(long, default_value = "assets/soundfonts/fluidr3-standard-kit.sf2")]
+    drums_sf2: PathBuf,
     /// Config directory holding keymap.toml and theme.toml
     /// (default: ~/.config/midi-party; both files are created on first run).
     #[arg(long)]
@@ -255,6 +261,7 @@ struct App {
     status: String,
     show_cheat_sheet: bool,
     keymap_editor: KeymapEditor,
+    picker: InstrumentPicker,
     /// Scroll the cursor into view once the roll has been laid out.
     needs_scroll: bool,
     /// The `:` command line while it is open.
@@ -305,7 +312,7 @@ impl App {
                 Err(e) => keys_error = Some(format!("--keys: {e}")),
             }
         }
-        let mut audio = Audio::open(&args.sf2).map_err(|e| e.to_string());
+        let mut audio = Audio::open(&args.sf2, &args.drums_sf2).map_err(|e| e.to_string());
         let mut status = match &audio {
             Ok(a) => format!("audio ready at {} Hz", a.sample_rate),
             Err(e) => format!("audio unavailable: {e}"),
@@ -343,6 +350,7 @@ impl App {
             status,
             show_cheat_sheet: false,
             keymap_editor: KeymapEditor::default(),
+            picker: InstrumentPicker::default(),
             needs_scroll: true,
             cmdline: None,
             file_path,
@@ -397,6 +405,19 @@ impl App {
 
     fn handle_chord(&mut self, chord: Chord, ctx: &egui::Context) {
         let text = chord.to_string();
+        if self.picker.open {
+            match self.picker.handle_chord(&text) {
+                Outcome::Nothing => {}
+                Outcome::Audition(entry) => self.preview_entry(&entry),
+                Outcome::Pick(entry) => {
+                    if self.picker.track < self.editor.song.tracks.len() {
+                        self.editor.show_track(self.picker.track);
+                    }
+                    self.execute(&entry.command());
+                }
+            }
+            return;
+        }
         if self.keymap_editor.open {
             let path = self.config_dir.join("keymap.toml");
             if let Some(status) = self.keymap_editor.handle_chord(&text, &path) {
@@ -466,6 +487,7 @@ impl App {
                     });
                 }
                 EditorEvent::ToggleCheatSheet => self.show_cheat_sheet = !self.show_cheat_sheet,
+                EditorEvent::OpenInstrumentPicker => self.open_picker(self.editor.track_index),
                 EditorEvent::View(ViewRequest::ZoomTime(factor)) => self.view.zoom_time(factor),
                 EditorEvent::View(ViewRequest::ZoomRows(factor)) => self.view.zoom_rows(factor),
                 EditorEvent::View(ViewRequest::TogglePianoRoll) => {
@@ -478,6 +500,25 @@ impl App {
     }
 
     /// Runs an editor command (from the mouse or the command line) and applies its events.
+    fn open_picker(&mut self, track: usize) {
+        let Some(t) = self.editor.song.tracks.get(track).cloned() else { return };
+        let lists = self.audio.as_mut().ok().map(|a| a.presets_for(&t));
+        self.picker.open(track, &t, lists);
+    }
+
+    fn preview_entry(&mut self, entry: &Entry) {
+        if entry.font.as_os_str().is_empty() {
+            return;
+        }
+        // On channel 10 the synth selects the kit bank itself, so the song stores bank 0.
+        let bank = if entry.drums { 0 } else { entry.bank };
+        if let Ok(audio) = &mut self.audio {
+            if let Err(e) = audio.preview(&entry.font, entry.preview_channel(), bank, entry.program, entry.preview_key(), 100) {
+                self.status = format!("audio error: {e}");
+            }
+        }
+    }
+
     fn execute(&mut self, cmd: &Command) {
         match self.editor.execute(cmd, None) {
             Ok(events) => self.apply_events(events),
@@ -486,7 +527,7 @@ impl App {
     }
 
     fn apply_roll_action(&mut self, action: RollAction) {
-        if self.cmdline.is_some() || self.show_cheat_sheet {
+        if self.cmdline.is_some() || self.show_cheat_sheet || self.picker.open {
             return;
         }
         match action {
@@ -552,7 +593,7 @@ impl App {
     }
 
     fn apply_tracks_action(&mut self, action: TracksAction) {
-        if self.cmdline.is_some() || self.show_cheat_sheet {
+        if self.cmdline.is_some() || self.show_cheat_sheet || self.picker.open {
             return;
         }
         let tracks = self.editor.song.tracks.len();
@@ -567,7 +608,12 @@ impl App {
                 self.editor.cursor.tick = Tick(tick);
             }
             TracksAction::SetCursorTick { tick } => self.editor.cursor.tick = Tick(tick),
-            TracksAction::ShowTrack { .. } | TracksAction::JumpTo { .. } => {}
+            TracksAction::PickInstrument { track } if track < tracks => {
+                self.editor.show_track(track);
+                self.editor.focus = None;
+                self.open_picker(track);
+            }
+            TracksAction::ShowTrack { .. } | TracksAction::JumpTo { .. } | TracksAction::PickInstrument { .. } => {}
         }
         self.scroll_views_to_cursor();
     }
@@ -930,7 +976,9 @@ impl eframe::App for App {
             self.handle_chord(chord, &ctx);
         }
         if !polled.text.is_empty() {
-            if self.keymap_editor.open {
+            if self.picker.open {
+                self.picker.handle_text(&polled.text);
+            } else if self.keymap_editor.open {
                 self.keymap_editor.handle_text(&polled.text);
             } else {
                 self.cmdline_text(&polled.text);
@@ -958,6 +1006,13 @@ impl eframe::App for App {
             .show(ui, |ui| self.draw_status_bar(ui));
         let playhead = self.playhead_tick();
         let background = self.theme.color("background");
+        let names: Vec<String> = {
+            let tracks = &self.editor.song.tracks;
+            match &mut self.audio {
+                Ok(audio) => tracks.iter().map(|t| audio.preset_name(t).unwrap_or_else(|| instrument_name(t))).collect(),
+                Err(_) => tracks.iter().map(instrument_name).collect(),
+            }
+        };
         let mut track_actions = Vec::new();
         let mut actions = Vec::new();
         if self.show_roll {
@@ -969,7 +1024,7 @@ impl eframe::App for App {
                 .default_size(220.0)
                 .size_range(egui::Rangef::new(80.0, (available - 160.0).max(80.0)))
                 .show(ui, |ui| {
-                    self.tracks.draw(ui, &self.editor, &self.theme, playhead, roll_window, &mut track_actions);
+                    self.tracks.draw(ui, &self.editor, &self.theme, playhead, roll_window, &names, &mut track_actions);
                 });
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE.fill(background))
@@ -981,7 +1036,7 @@ impl eframe::App for App {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE.fill(status_bg))
                 .show(ui, |ui| {
-                    self.tracks.draw(ui, &self.editor, &self.theme, playhead, None, &mut track_actions);
+                    self.tracks.draw(ui, &self.editor, &self.theme, playhead, None, &names, &mut track_actions);
                 });
         }
         for action in track_actions {
@@ -999,6 +1054,9 @@ impl eframe::App for App {
         }
         if self.keymap_editor.open {
             self.keymap_editor.draw(&ctx, &self.theme);
+        }
+        if self.picker.open {
+            self.picker.draw(&ctx, &self.theme);
         }
     }
 }

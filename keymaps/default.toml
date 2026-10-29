@@ -4,7 +4,8 @@
 # selected notes; Cmd+arrows jump a bar or an octave. Add Shift to a jump to select
 # that far, add Shift to an Alt move to move that far. Cmd+a/c/x/v/z work as usual.
 # Cmd+e hides or shows the piano roll under the tracks area; Cmd+0 fits the whole
-# song in the tracks area again after zooming it.
+# song in the tracks area again after zooming it. Ctrl+i picks the track's instrument
+# (drum kits included); Ctrl+. and Ctrl+, step through presets.
 #
 # One table: [normal].
 # Keys:   "Right", "Shift+Right", "n", "[" ... or a sequence "f t" (space separated).
@@ -18,7 +19,7 @@
 #         four grid steps long). Each command documents what a count does for it.
 # Anything without a key here is reachable from the command line (":" then e.g.
 # "quantize 1/8T 50%", "vel 60..110", "sel top", "keep every 3", "rename My Bass",
-# "vol 80", "pan L30", "channel 10", "sf2 gm.sf2 33", "reverb 40", "lane sustain",
+# "vol 80", "pan L30", "preset 33", "drums", "instruments", "sf2 gm.sf2 33", "reverb 40", "lane sustain",
 # "lane_value 90", "ramp_lane 0 127", "pedal").
 
 [normal]
@@ -146,6 +147,7 @@
 "Ctrl+["      = { cmd = "nudge_track_pan", delta = -10 }
 "Ctrl+."      = "next_preset"
 "Ctrl+,"      = "prev_preset"
+"Ctrl+i"      = "open_instrument_picker"
 
 # --- controller lanes (sustain, pitch bend, mod wheel, volume, pan)
 "Shift+c"         = "cycle_lane"

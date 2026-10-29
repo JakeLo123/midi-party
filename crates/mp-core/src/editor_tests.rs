@@ -3,6 +3,7 @@
 //! exercised, and a few RON snapshots pin the resulting songs.
 
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 
 use crate::cmdline;
 use crate::editor::{
@@ -10,7 +11,7 @@ use crate::editor::{
     ZOOM_TIME_STEP,
 };
 use crate::keymap::{parse_sequence, Keymap, Resolution};
-use crate::song::{Instrument, LaneKind, NoteId, Song, Tick, Track};
+use crate::song::{is_default_track_name, Instrument, LaneKind, NoteId, Song, Tick, Track, DRUM_CHANNEL};
 use crate::test_harness::{default_keymap, drive, drive_with, try_drive_with, DriveError, DEFAULT_KEYMAP_TOML};
 use crate::time::{Division, Grid, GridModifier};
 use crate::Editor;
@@ -1837,10 +1838,10 @@ fn set_instrument_and_step_presets() {
         crate::song::Instrument::SoundFont { path: "sounds/gm.sf2".into(), bank: 0, preset: 33 }
     );
     assert!(has_song_changed(&ev));
-    assert_eq!(last_status(&ev), "sf2 sounds/gm.sf2 preset 33 bank 0 on 1/1: Track 1");
+    assert_eq!(last_status(&ev), "Electric Bass (finger) from sounds/gm.sf2 on 1/1: Track 1");
     let ev = drive_with(&mut e, &mut k, "Ctrl+. Ctrl+.");
     assert_eq!(preset(&e), 35);
-    assert_eq!(last_status(&ev), "sf2 sounds/gm.sf2 preset 35 bank 0 on 1/1: Track 1");
+    assert_eq!(last_status(&ev), "Fretless Bass from sounds/gm.sf2 on 1/1: Track 1");
     drive_with(&mut e, &mut k, "3 Ctrl+,");
     assert_eq!(preset(&e), 32);
     assert_eq!(e.undo.undo_depth(), 2, "preset steps coalesce into one step after the sf2 change");
@@ -1853,7 +1854,7 @@ fn set_instrument_and_step_presets() {
     assert_eq!(preset(&e), 127, "wraps 0 -> 127");
     let ev = drive_with(&mut e, &mut k, "3 Ctrl+.");
     assert_eq!(preset(&e), 2);
-    assert_eq!(last_status(&ev), "sf2 default preset 2 bank 0 on 1/1: Track 1");
+    assert_eq!(last_status(&ev), "Electric Grand Piano on 1/1: Track 1");
     assert_eq!(
         e.execute(&Command::SetInstrument { path: None, bank: 0, preset: 128 }, None),
         Err(EditError::BadValue("preset 128 is not 0-127".to_string()))
@@ -2129,4 +2130,70 @@ fn snapshot_copy_paste_duplicate() {
 fn snapshot_box_and_move() {
     let e = drive(song3(), &km(), "n Right n Right n Shift+Left Shift+Left Alt+Up Alt+Up [ Escape");
     insta::assert_ron_snapshot!("box_and_move", e.song);
+}
+
+#[test]
+fn new_tracks_take_distinct_melodic_channels() {
+    let mut e = Editor::new(song3());
+    assert_eq!(e.song.free_channel(), 1, "track 1 holds channel 0");
+    e.execute(&Command::AddTrack, Some(10)).unwrap();
+    let channels: Vec<u8> = e.song.tracks.iter().map(|t| t.channel).collect();
+    assert_eq!(channels, vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11]);
+    assert!(!channels.contains(&DRUM_CHANNEL));
+    e.execute(&Command::AddTrack, Some(5)).unwrap();
+    let channels: Vec<u8> = e.song.tracks.iter().map(|t| t.channel).collect();
+    assert_eq!(&channels[11..], &[12, 13, 14, 15, 0], "the sixteenth melodic track reuses the least-used channel");
+}
+
+#[test]
+fn drum_kit_moves_the_track_to_channel_ten_and_names_it() {
+    let mut e = Editor::new(song3());
+    let ev = e.execute(&Command::SetDrumKit { kit: 0 }, None).unwrap();
+    assert!(has_song_changed(&ev));
+    assert!(e.song.tracks[0].is_drums());
+    assert_eq!(e.song.tracks[0].name, "Drums");
+    assert_eq!(e.song.tracks[0].instrument, Instrument::SoundFont { path: PathBuf::new(), bank: 0, preset: 0 });
+    assert_eq!(last_status(&ev), "Drums: Standard on 1/1: Drums");
+
+    e.execute(&Command::RenameTrack { name: "Beat".to_string() }, None).unwrap();
+    let ev = e.execute(&Command::SetDrumKit { kit: 8 }, None).unwrap();
+    assert_eq!(e.song.tracks[0].name, "Beat", "a name the user chose is kept");
+    assert_eq!(last_status(&ev), "Drums: Room on 1/1: Beat");
+
+    e.execute(&Command::Undo, None).unwrap();
+    e.execute(&Command::Undo, None).unwrap();
+    e.execute(&Command::Undo, None).unwrap();
+    assert_eq!(e.song, song3(), "one undo step per pick");
+}
+
+#[test]
+fn a_preset_takes_a_drum_track_back_to_a_melodic_channel() {
+    let mut e = Editor::new(song3());
+    e.execute(&Command::AddTrack, None).unwrap();
+    e.execute(&Command::SetDrumKit { kit: 0 }, None).unwrap();
+    assert_eq!(e.song.tracks[1].channel, DRUM_CHANNEL);
+    let ev = e.execute(&Command::SetPreset { preset: 33 }, None).unwrap();
+    assert_eq!(e.song.tracks[1].channel, 1, "the lowest channel no other track uses");
+    assert_eq!(e.song.tracks[1].name, "Drums", "the name is left alone");
+    assert_eq!(last_status(&ev), "Electric Bass (finger) on 2/2: Drums");
+    assert!(matches!(e.execute(&Command::SetPreset { preset: 128 }, None), Err(EditError::BadValue(_))));
+}
+
+#[test]
+fn duplicating_keeps_drums_on_channel_ten_but_melodic_copies_get_their_own() {
+    let mut e = Editor::new(song3());
+    e.execute(&Command::DuplicateTrack, None).unwrap();
+    assert_eq!(e.song.tracks[1].channel, 1);
+    e.execute(&Command::SetDrumKit { kit: 0 }, None).unwrap();
+    e.execute(&Command::DuplicateTrack, None).unwrap();
+    assert_eq!(e.song.tracks[2].channel, DRUM_CHANNEL);
+}
+
+#[test]
+fn default_track_names_are_recognised() {
+    assert!(is_default_track_name("Track 1"));
+    assert!(is_default_track_name("Track 12"));
+    assert!(!is_default_track_name("Track"));
+    assert!(!is_default_track_name("Track one"));
+    assert!(!is_default_track_name("Bass"));
 }

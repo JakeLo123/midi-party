@@ -3,7 +3,7 @@
 //! scroll, independent of the piano roll, and starts fitted to the song.
 
 use egui::{Align2, Color32, FontId, Painter, Pos2, Rangef, Rect, Sense, Stroke, Ui, Vec2};
-use mp_core::{pan_label, Editor, Instrument, Note, Song, Tick};
+use mp_core::{pan_label, Editor, Note, Song, Tick};
 
 use crate::theme::Theme;
 
@@ -26,6 +26,13 @@ pub enum TracksAction {
     JumpTo { track: usize, tick: u64 },
     /// Click in the ruler: move the cursor in time only.
     SetCursorTick { tick: u64 },
+    /// Click on the instrument line of a row header: choose that track's sound.
+    PickInstrument { track: usize },
+}
+
+/// Whether a click in a row header landed on its instrument line (the lower half).
+fn header_instrument_hit(header: Rect, pos: Pos2) -> bool {
+    pos.y >= header.center().y
 }
 
 pub struct TracksArea {
@@ -137,6 +144,7 @@ impl TracksArea {
 
     /// Draws the map and reports clicks. `roll_window` is the tick range the piano
     /// roll is showing, drawn as a faint box when the roll is open.
+    #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
         ui: &mut Ui,
@@ -144,6 +152,7 @@ impl TracksArea {
         theme: &Theme,
         playhead_tick: Option<f64>,
         roll_window: Option<(f64, f64)>,
+        instrument_names: &[String],
         actions: &mut Vec<TracksAction>,
     ) {
         let rect = ui.available_rect_before_wrap();
@@ -205,13 +214,18 @@ impl TracksArea {
                 let lane = Rect::from_min_max(Pos2::new(header.right(), row.top()), row.max);
                 let painter = ui.painter();
                 let muted = track.mute || (any_solo && !track.solo);
-                self.draw_header(painter, header, i, track, current, muted, theme, &header_font);
+                let instrument = instrument_names.get(i).map(String::as_str).unwrap_or("");
+                self.draw_header(painter, header, i, track, instrument, current, muted, theme, &header_font);
                 self.draw_lane(painter, lane, track, current, muted, song, theme);
                 painter.hline(row.x_range(), row.bottom() - 0.5, Stroke::new(1.0, theme.color("grid")));
                 if response.clicked() {
                     if let Some(pos) = response.interact_pointer_pos() {
                         if pos.x < lane.left() {
-                            actions.push(TracksAction::ShowTrack { track: i });
+                            if header_instrument_hit(header, pos) {
+                                actions.push(TracksAction::PickInstrument { track: i });
+                            } else {
+                                actions.push(TracksAction::ShowTrack { track: i });
+                            }
                         } else {
                             actions.push(TracksAction::JumpTo { track: i, tick: snap(self.tick_at_x(lane.left(), pos.x)) });
                         }
@@ -269,17 +283,11 @@ impl TracksArea {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn draw_header(&self, painter: &Painter, header: Rect, index: usize, track: &mp_core::Track, current: bool, muted: bool, theme: &Theme, font: &FontId) {
+    fn draw_header(&self, painter: &Painter, header: Rect, index: usize, track: &mp_core::Track, instrument: &str, current: bool, muted: bool, theme: &Theme, font: &FontId) {
         let painter = painter.with_clip_rect(header);
         if current {
             painter.rect_filled(header, 0.0, theme.color("black_key_row"));
         }
-        let instrument = match &track.instrument {
-            Instrument::SoundFont { path, preset, .. } => {
-                let font_name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("default");
-                format!("{font_name} p{preset}")
-            }
-        };
         let flags = format!("{}{}", if track.mute { "M" } else { "·" }, if track.solo { "S" } else { "·" });
         let line1 = format!("{:>2} {} {flags}", index + 1, track.name);
         let line2 = format!("   {instrument} {:>3}% {}", (track.volume * 100.0).round() as i32, pan_label((track.pan * 100.0).round() as i32));
@@ -327,6 +335,13 @@ impl TracksArea {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_lower_half_of_a_header_is_its_instrument_line() {
+        let header = Rect::from_min_size(Pos2::new(0.0, 100.0), Vec2::new(HEADER_W, ROW_H));
+        assert!(!header_instrument_hit(header, Pos2::new(10.0, 105.0)));
+        assert!(header_instrument_hit(header, Pos2::new(10.0, 130.0)));
+    }
     use mp_core::{Note, NoteId, Track};
 
     fn note(pitch: u8) -> Note {
