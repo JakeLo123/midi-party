@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 
-use egui::{Align2, FontId, RichText, Stroke, Vec2};
+use egui::{Align2, RichText, Stroke, Vec2};
 use mp_core::{drum_kit_name, program_name, Command, Instrument, Track, DRUM_CHANNEL};
 
 use crate::bridge::PresetList;
@@ -200,13 +200,14 @@ impl InstrumentPicker {
     }
 
     pub fn draw(&self, ctx: &egui::Context, theme: &Theme) {
-        let font = FontId::monospace(theme.font_size - 1.0);
+        let font = theme.font(theme.font_size - 1.0);
         let mono = |s: &str| RichText::new(s).font(font.clone());
+        let heading = |s: &str| RichText::new(s).font(theme.bold(theme.font_size));
         let viewport = ctx.content_rect();
         let size = Vec2::new((viewport.width() - 160.0).clamp(300.0, 560.0), (viewport.height() - 72.0).max(200.0));
         let frame = egui::Frame::NONE
             .fill(theme.color("status_bg"))
-            .stroke(Stroke::new(1.0, theme.color("bar_line")))
+            .stroke(Stroke::new(1.0, theme.color("panel_border")))
             .inner_margin(14.0);
         let visible = self.visible();
         egui::Window::new("instrument_picker")
@@ -220,7 +221,7 @@ impl InstrumentPicker {
                 let inner_w = size.x - 28.0;
                 ui.set_min_size(Vec2::new(inner_w, size.y - 28.0));
                 ui.set_max_width(inner_w);
-                ui.label(mono("INSTRUMENT").color(theme.color("status_mode")).strong());
+                ui.label(RichText::new("Instrument").font(theme.bold(theme.font_size + 1.0)).color(theme.color("status_mode")));
                 ui.add(
                     egui::Label::new(
                         mono("Up/Down to hear each sound · Enter picks it · type to filter · Escape closes.")
@@ -228,6 +229,7 @@ impl InstrumentPicker {
                     )
                     .wrap(),
                 );
+                ui.add_space(4.0);
                 ui.label(mono(&format!("filter: {}▏", self.filter)).color(theme.color("status_fg")));
                 ui.add_space(6.0);
                 egui::ScrollArea::vertical().show(ui, |ui| {
@@ -237,11 +239,10 @@ impl InstrumentPicker {
                         if group != Some(entry.drums) {
                             group = Some(entry.drums);
                             ui.add_space(if pos == 0 { 0.0 } else { 8.0 });
-                            let heading = if entry.drums { "DRUMS" } else { "INSTRUMENTS" };
-                            ui.label(mono(heading).color(theme.color("accent")).strong());
+                            ui.label(heading(if entry.drums { "Drums" } else { "Instruments" }).color(theme.color("accent")));
                         }
                         let selected = pos == self.selected;
-                        let bg = if selected { theme.color("black_key_row") } else { theme.color("status_bg") };
+                        let bg = if selected { theme.color("lane_current") } else { theme.color("status_bg") };
                         let response = egui::Frame::NONE.fill(bg).inner_margin(2.0).show(ui, |ui| {
                             ui.set_width(inner_w - 8.0);
                             ui.horizontal(|ui| {

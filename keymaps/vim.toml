@@ -1,6 +1,6 @@
 # midi-party "vim" preset: home-row cursor movement on top of the default keymap.
 #
-# Enable it by putting this line at the top of ~/.config/midi-party/keymap.toml:
+# Enable it by putting this line at the top of keymap.toml in the config folder (macOS: ~/Library/Application Support/midi-party, Linux: ~/.config/midi-party):
 #
 #     preset = "vim"
 #

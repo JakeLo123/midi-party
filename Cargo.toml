@@ -21,7 +21,9 @@ hound = "3.5"
 mp3lame-encoder = "0.2"
 arc-swap = "1"
 rtrb = "0.3"
-eframe = { version = "0.37", features = ["default_fonts"] }
+# eframe's default `system_fonts` feature pulls in color-font support, which paints
+# Anonymous Pro's embedded bitmap strikes as white color glyphs instead of using the outlines.
+eframe = { version = "0.37", default-features = false, features = ["accesskit", "clipboard", "default_fonts", "links", "wayland", "web_screen_reader", "wgpu", "x11"] }
 egui = "0.37"
 notify = "8"
 dirs = "6"

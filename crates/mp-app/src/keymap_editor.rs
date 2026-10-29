@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use egui::{Align2, FontId, RichText, Stroke, Vec2};
+use egui::{Align2, RichText, Stroke, Vec2};
 use mp_core::{Command, Keymap, BINDINGS_TABLE};
 use toml_edit::{DocumentMut, InlineTable, Item, Value};
 
@@ -186,13 +186,13 @@ impl KeymapEditor {
     }
 
     pub fn draw(&self, ctx: &egui::Context, theme: &Theme) {
-        let font = FontId::monospace(theme.font_size - 1.0);
+        let font = theme.font(theme.font_size - 1.0);
         let mono = |s: &str| RichText::new(s).font(font.clone());
         let viewport = ctx.content_rect();
         let size = Vec2::new((viewport.width() - 120.0).clamp(300.0, 900.0), (viewport.height() - 72.0).max(200.0));
         let frame = egui::Frame::NONE
             .fill(theme.color("status_bg"))
-            .stroke(Stroke::new(1.0, theme.color("bar_line")))
+            .stroke(Stroke::new(1.0, theme.color("panel_border")))
             .inner_margin(14.0);
         let visible = self.visible();
         egui::Window::new("keymap_editor")
@@ -206,7 +206,7 @@ impl KeymapEditor {
                 let inner_w = size.x - 28.0;
                 ui.set_min_size(Vec2::new(inner_w, size.y - 28.0));
                 ui.set_max_width(inner_w);
-                ui.label(mono("KEYMAP EDITOR").color(theme.color("status_mode")).strong());
+                ui.label(RichText::new("Keymap editor").font(theme.bold(theme.font_size + 1.0)).color(theme.color("status_mode")));
                 ui.add(
                     egui::Label::new(
                         mono("Up/Down pick a row · Enter then press a key to rebind · Backspace unbinds · type to filter · Escape closes. Changes are written to keymap.toml and apply immediately.")
@@ -214,6 +214,7 @@ impl KeymapEditor {
                     )
                     .wrap(),
                 );
+                ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.label(mono(&format!("filter: {}▏", self.filter)).color(theme.color("status_fg")));
                     if !self.message.is_empty() {
@@ -225,15 +226,15 @@ impl KeymapEditor {
                     for (pos, index) in visible.iter().enumerate() {
                         let row = &self.rows[*index];
                         let selected = pos == self.selected;
-                        let bg = if selected { theme.color("black_key_row") } else { theme.color("status_bg") };
+                        let bg = if selected { theme.color("lane_current") } else { theme.color("status_bg") };
                         let response = egui::Frame::NONE.fill(bg).inner_margin(2.0).show(ui, |ui| {
                             ui.set_width(inner_w - 8.0);
                             ui.horizontal(|ui| {
                                 let keys = if row.keys.is_empty() { "—" } else { &row.keys };
-                                ui.add_sized(
-                                    [150.0, 0.0],
-                                    egui::Label::new(mono(keys).color(theme.color(if selected { "note_selected" } else { "accent" }))),
-                                );
+                                let key_color = theme.color(if selected { "note_selected" } else { "accent" });
+                                ui.allocate_ui_with_layout(Vec2::new(150.0, 0.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    ui.label(mono(keys).color(key_color));
+                                });
                                 ui.add(egui::Label::new(mono(&row.command.describe()).color(theme.color("status_fg"))).wrap());
                             });
                         });
