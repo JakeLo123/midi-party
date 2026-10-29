@@ -394,6 +394,9 @@ impl App {
     }
 
     fn seek_playhead(&mut self, tick: Tick) {
+        if tick == self.playhead {
+            return;
+        }
         self.playhead = tick;
         let seconds = self.tick_seconds(tick);
         if let Ok(audio) = &mut self.audio {

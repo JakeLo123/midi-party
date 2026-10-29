@@ -41,6 +41,7 @@ enum DragKind {
     Move,
     Resize,
     Box,
+    Scrub,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -234,6 +235,14 @@ impl RollView {
             self.draw_key_column(&painter, rect, area, theme, &font);
         }
         self.draw_ruler(&painter, rect, area, editor, theme, &font);
+        if let Some(tick) = playhead_tick {
+            let ruler = Rect::from_min_max(Pos2::new(area.left(), rect.top()), Pos2::new(rect.right(), area.top()));
+            let x = self.x_of(area, tick);
+            let color = theme.color("playhead");
+            let p = painter.with_clip_rect(ruler);
+            p.vline(x, ruler.y_range(), Stroke::new(2.0, color));
+            draw_playhead_marker(&p, x, ruler.bottom(), color);
+        }
         rect
     }
 
@@ -291,7 +300,9 @@ impl RollView {
             return;
         }
 
-        if response.drag_started() && in_area {
+        if response.drag_started() && in_ruler {
+            self.drag = Some(Drag { kind: DragKind::Scrub, origin: (0.0, 0), applied: (0, 0), add: false });
+        } else if response.drag_started() && in_area {
             let origin = (self.tick_at_x(area, pos.x), self.pitch_at_y(area, pos.y));
             let kind = match self.note_hit(area, editor, pos) {
                 Some((id, on_edge)) => {
@@ -314,6 +325,7 @@ impl RollView {
                 let tick = self.tick_at_x(area, pos.x);
                 let pitch = self.pitch_at_y(area, pos.y);
                 match drag.kind {
+                    DragKind::Scrub => actions.push(RollAction::SetPlayhead { tick: snap(tick) }),
                     DragKind::Move | DragKind::Resize => {
                         let steps = ((tick - drag.origin.0) / grid as f64).round() as i64;
                         let semis = if drag.kind == DragKind::Move { pitch - drag.origin.1 } else { 0 };
@@ -598,4 +610,11 @@ impl RollView {
         }
         painter.hline(ruler.x_range(), area.top() - 0.5, Stroke::new(1.0, theme.color("bar_line")));
     }
+}
+
+/// The playhead's handle in a ruler: a small triangle pointing down at `bottom`.
+pub(crate) fn draw_playhead_marker(painter: &Painter, x: f32, bottom: f32, color: Color32) {
+    let x = x.round();
+    let points = vec![Pos2::new(x - 6.0, bottom - 8.0), Pos2::new(x + 6.0, bottom - 8.0), Pos2::new(x, bottom)];
+    painter.add(egui::Shape::convex_polygon(points, color, Stroke::NONE));
 }

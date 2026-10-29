@@ -189,8 +189,8 @@ impl TracksArea {
         let font = FontId::monospace((theme.font_size - 3.0).max(8.0));
         let ruler = Rect::from_min_max(Pos2::new(lanes_x.min, rect.top()), Pos2::new(rect.right(), rect.top() + RULER_H));
         self.draw_ruler(ui.painter(), ruler, lanes_x, song, theme, &font);
-        let ruler_response = ui.interact(ruler, ui.scope_id().with("tracks_ruler"), Sense::click());
-        if ruler_response.clicked() {
+        let ruler_response = ui.interact(ruler, ui.scope_id().with("tracks_ruler"), Sense::click_and_drag());
+        if ruler_response.clicked() || ruler_response.dragged() {
             if let Some(pos) = ruler_response.interact_pointer_pos() {
                 actions.push(TracksAction::SetPlayhead { tick: snap(self.tick_at_x(lanes_x.min, pos.x)) });
             }
@@ -253,7 +253,10 @@ impl TracksArea {
         let cursor_x = self.x_of(lanes_x.min, editor.cursor.tick.get() as f64);
         overlay.vline(cursor_x.round() + 0.5, full_y, Stroke::new(1.0, theme.color("cursor")));
         if let Some(tick) = playhead_tick {
-            overlay.vline(self.x_of(lanes_x.min, tick), full_y, Stroke::new(2.0, theme.color("playhead")));
+            let x = self.x_of(lanes_x.min, tick);
+            let color = theme.color("playhead");
+            overlay.vline(x, full_y, Stroke::new(2.0, color));
+            crate::piano_roll::draw_playhead_marker(&overlay, x, ruler.bottom(), color);
         }
     }
 
