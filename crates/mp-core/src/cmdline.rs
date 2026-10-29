@@ -128,6 +128,9 @@ const SPECS: &[Spec] = &[
     Spec { name: "set_instrument", args: "<path|default> [preset] [bank]", aliases: &["sf2", "instrument", "track sf2"] },
     Spec { name: "next_preset", args: "", aliases: &["preset next"] },
     Spec { name: "prev_preset", args: "", aliases: &["preset prev"] },
+    Spec { name: "set_preset", args: "<0-127>", aliases: &["preset"] },
+    Spec { name: "set_drum_kit", args: "[kit 0-127]", aliases: &["drums", "kit"] },
+    Spec { name: "open_instrument_picker", args: "", aliases: &["instruments"] },
     Spec { name: "set_master_reverb", args: "<0-100%>", aliases: &["reverb"] },
     Spec { name: "show_lane", args: "<sustain|bend|mod|volume|pan|off>", aliases: &["lane"] },
     Spec { name: "cycle_lane", args: "", aliases: &["lane next"] },
@@ -575,6 +578,20 @@ pub fn parse(line: &str) -> Result<Command, CmdLineError> {
         "set_instrument" => a.instrument()?,
         "next_preset" => Command::NextPreset,
         "prev_preset" => Command::PrevPreset,
+        "set_preset" => {
+            a.at_most(1)?;
+            a.required(0, "preset")?;
+            Command::SetPreset { preset: a.bounded(0, "preset", 0, 127, "expected a program 0-127")? }
+        }
+        "set_drum_kit" => {
+            a.at_most(1)?;
+            let kit = match a.optional(0) {
+                None => 0,
+                Some(_) => a.bounded(0, "kit", 0, 127, "expected a kit 0-127")?,
+            };
+            Command::SetDrumKit { kit }
+        }
+        "open_instrument_picker" => Command::OpenInstrumentPicker,
         "set_master_reverb" => {
             a.at_most(1)?;
             a.required(0, "percent")?;
@@ -663,6 +680,8 @@ pub fn to_line(cmd: &Command) -> String {
         Command::NudgeTrackVolume { delta } | Command::NudgeTrackPan { delta } => vec![delta.to_string()],
         Command::SetTrackPan { value } => vec![value.to_string()],
         Command::SetTrackChannel { channel } => vec![(u32::from(*channel) + 1).to_string()],
+        Command::SetPreset { preset } => vec![preset.to_string()],
+        Command::SetDrumKit { kit } => vec![kit.to_string()],
         Command::SetInstrument { path, bank, preset } => {
             let path = match path {
                 Some(p) if !p.as_os_str().is_empty() => p.display().to_string(),
@@ -717,6 +736,7 @@ pub fn to_line(cmd: &Command) -> String {
         | Command::TogglePianoRoll
         | Command::ZoomToFit
         | Command::ToggleCheatSheet
+        | Command::OpenInstrumentPicker
         | Command::AddTrack
         | Command::RemoveTrack
         | Command::DuplicateTrack
@@ -881,6 +901,12 @@ mod tests {
         assert_eq!(parse("sf2 gm.sf2 33 1"), Ok(Command::SetInstrument { path: Some("gm.sf2".into()), bank: 1, preset: 33 }));
         assert_eq!(parse("preset next"), Ok(Command::NextPreset));
         assert_eq!(parse("preset prev"), Ok(Command::PrevPreset));
+        assert_eq!(parse("preset 34"), Ok(Command::SetPreset { preset: 34 }));
+        assert_eq!(parse("drums"), Ok(Command::SetDrumKit { kit: 0 }));
+        assert_eq!(parse("drums 8"), Ok(Command::SetDrumKit { kit: 8 }));
+        assert_eq!(parse("kit 25"), Ok(Command::SetDrumKit { kit: 25 }));
+        assert_eq!(parse("instruments"), Ok(Command::OpenInstrumentPicker));
+        assert!(matches!(parse("preset 128"), Err(CmdLineError::BadArg { .. })));
         assert_eq!(parse("reverb 30"), Ok(Command::SetMasterReverb { percent: 30 }));
         assert_eq!(parse("lane sustain"), Ok(Command::ShowLane { kind: Some(LaneKind::Sustain) }));
         assert_eq!(parse("lane Bend"), Ok(Command::ShowLane { kind: Some(LaneKind::PitchBend) }));

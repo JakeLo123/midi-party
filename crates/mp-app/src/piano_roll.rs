@@ -3,7 +3,7 @@
 //! All editing state lives in the `Editor`; the app applies the actions.
 
 use egui::{Align2, Color32, FontId, Painter, Pos2, Rangef, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
-use mp_core::{pitch_name, Editor, LaneKind, NoteId, Tick};
+use mp_core::{percussion_short, pitch_name, Editor, LaneKind, NoteId, Tick, Track};
 
 use crate::theme::Theme;
 
@@ -228,7 +228,11 @@ impl RollView {
             let x = self.x_of(area, tick);
             painter.with_clip_rect(area).vline(x, area.y_range(), Stroke::new(2.0, theme.color("playhead")));
         }
-        self.draw_key_column(&painter, rect, area, theme, &font);
+        if editor.track().is_some_and(Track::is_drums) {
+            self.draw_drum_column(&painter, rect, area, theme, &font);
+        } else {
+            self.draw_key_column(&painter, rect, area, theme, &font);
+        }
         self.draw_ruler(&painter, rect, area, editor, theme, &font);
         rect
     }
@@ -499,6 +503,34 @@ impl RollView {
         let r = self.note_rect(area, start, end, editor.cursor.pitch).expand(1.0);
         painter.rect_filled(r, 0.0, theme.color("cursor_fill"));
         painter.rect_stroke(r, 0.0, Stroke::new(2.0, theme.color("cursor")), StrokeKind::Outside);
+    }
+
+    /// The key column of a drum track: no piano keys, one drum name per mapped row.
+    fn draw_drum_column(&self, painter: &Painter, rect: Rect, area: Rect, theme: &Theme, font: &FontId) {
+        let column = Rect::from_min_max(Pos2::new(rect.left(), area.top()), Pos2::new(area.left(), rect.bottom()));
+        let painter = painter.with_clip_rect(column);
+        painter.rect_filled(column, 0.0, theme.color("white_key"));
+        let rows = self.rows_visible(area);
+        for row in 0..=rows {
+            let pitch = self.top_pitch as i32 - row;
+            if !(0..=127).contains(&pitch) {
+                continue;
+            }
+            let y = self.y_of(area, pitch);
+            painter.hline(column.x_range(), y + self.row_h - 0.5, Stroke::new(1.0, theme.color("grid")));
+            if self.row_h >= 9.0 {
+                if let Some(label) = percussion_short(pitch as u8) {
+                    painter.text(
+                        Pos2::new(column.right() - 4.0, y + self.row_h / 2.0),
+                        Align2::RIGHT_CENTER,
+                        label,
+                        font.clone(),
+                        theme.color("key_label"),
+                    );
+                }
+            }
+        }
+        painter.vline(area.left() - 0.5, column.y_range(), Stroke::new(1.0, theme.color("bar_line")));
     }
 
     fn draw_key_column(&self, painter: &Painter, rect: Rect, area: Rect, theme: &Theme, font: &FontId) {

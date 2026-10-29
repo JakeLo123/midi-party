@@ -52,5 +52,6 @@ new files.
 ## Licensing note
 
 MP3 export links LAME statically via `mp3lame-encoder` (LGPL-3.0). The test
-SoundFont (`assets/soundfonts/florestan-subset.sf2`) is public domain; see the
-`LICENSE.txt` beside it. Everything else is MIT/Apache/Unlicense.
+SoundFont (`assets/soundfonts/florestan-subset.sf2`) is public domain and the
+drum kit (`fluidr3-standard-kit.sf2`) is MIT; see the `LICENSE.txt` beside
+them. Everything else is MIT/Apache/Unlicense.

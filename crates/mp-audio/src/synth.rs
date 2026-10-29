@@ -54,6 +54,11 @@ pub fn load_soundfont(path: impl AsRef<Path>) -> Result<Arc<SoundFont>, AudioErr
     Ok(Arc::new(sf))
 }
 
+/// Whether the SoundFont carries a drum kit (any bank-128 preset, what channel 10 plays).
+pub fn has_drum_kit(font: &SoundFont) -> bool {
+    font.get_presets().iter().any(|p| p.get_bank_number() >= 128)
+}
+
 /// A SoundFont-backed instrument.
 pub struct SoundFontSynth {
     inner: Synthesizer,

@@ -30,7 +30,7 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::song::{Instrument, LaneKind, Note, NoteId, Song, Tick, Track};
+use crate::song::{is_default_track_name, Instrument, LaneKind, Note, NoteId, Song, Tick, Track, DRUM_CHANNEL};
 use crate::time::Grid;
 use crate::undo::{Snapshot, UndoStack};
 
@@ -115,6 +115,8 @@ pub enum EditorEvent {
     Transport(TransportRequest),
     /// Show the cheat sheet if hidden, hide it if shown.
     ToggleCheatSheet,
+    /// Open the instrument picker for the current track; the app owns the list.
+    OpenInstrumentPicker,
     /// A zoom command was run; the app owns the view.
     View(ViewRequest),
 }
@@ -509,6 +511,7 @@ impl Editor {
             Command::TogglePianoRoll => ev.push(EditorEvent::View(ViewRequest::TogglePianoRoll)),
             Command::ZoomToFit => ev.push(EditorEvent::View(ViewRequest::FitTracksToSong)),
             Command::ToggleCheatSheet => ev.push(EditorEvent::ToggleCheatSheet),
+            Command::OpenInstrumentPicker => ev.push(EditorEvent::OpenInstrumentPicker),
 
             // -------------------------------------------------------------- track
             Command::AddTrack => self.add_tracks(n, &mut ev)?,
@@ -533,6 +536,8 @@ impl Editor {
             Command::ToggleMute => self.toggle_mute(&mut ev)?,
             Command::ToggleSolo => self.toggle_solo(&mut ev)?,
             Command::SetTrackChannel { channel } => self.set_track_channel(*channel, &mut ev)?,
+            Command::SetPreset { preset } => self.set_preset(*preset, &mut ev)?,
+            Command::SetDrumKit { kit } => self.set_drum_kit(*kit, &mut ev)?,
             Command::SetInstrument { path, bank, preset } => self.set_instrument(path.clone(), *bank, *preset, &mut ev)?,
             Command::NextPreset => self.step_preset(i64::from(n), &mut ev)?,
             Command::PrevPreset => self.step_preset(-i64::from(n), &mut ev)?,
@@ -1219,8 +1224,9 @@ impl Editor {
         self.commit(None);
         let mut index = self.track_index;
         for _ in 0..n {
-            let name = self.song.next_track_name();
-            index = self.song.insert_track(index + 1, Track::new(name));
+            let mut track = Track::new(self.song.next_track_name());
+            track.channel = self.song.free_channel();
+            index = self.song.insert_track(index + 1, track);
         }
         self.show_track(index);
         ev.push(EditorEvent::SongChanged);
@@ -1249,7 +1255,10 @@ impl Editor {
         let source = self.track_index;
         let mut index = source;
         for _ in 0..n {
-            let Some(copy) = self.song.duplicate_track(source) else { break };
+            let Some(mut copy) = self.song.duplicate_track(source) else { break };
+            if !copy.is_drums() {
+                copy.channel = self.song.free_channel();
+            }
             index = self.song.insert_track(index + 1, copy);
         }
         self.show_track(index);
@@ -1381,7 +1390,52 @@ impl Editor {
             self.track_mut().instrument = instrument;
             ev.push(EditorEvent::SongChanged);
         }
-        ev.push(EditorEvent::Status(format!("{} on {}", instrument_label(&self.song.tracks[self.track_index].instrument), self.track_label())));
+        ev.push(EditorEvent::Status(format!("{} on {}", instrument_status(&self.song.tracks[self.track_index]), self.track_label())));
+        Ok(())
+    }
+
+    /// Plays General MIDI program `preset` on the track's SoundFont; a drum track
+    /// leaves channel 10 for a free melodic channel.
+    fn set_preset(&mut self, preset: u16, ev: &mut Vec<EditorEvent>) -> Result<(), EditError> {
+        if preset > MAX_PRESET {
+            return Err(EditError::BadValue(format!("preset {preset} is not 0-{MAX_PRESET}")));
+        }
+        let track = self.current_track()?;
+        let Instrument::SoundFont { path, .. } = &track.instrument;
+        let instrument = Instrument::SoundFont { path: path.clone(), bank: 0, preset };
+        let channel = if track.is_drums() { self.song.free_channel() } else { track.channel };
+        if track.instrument != instrument || track.channel != channel {
+            self.commit(None);
+            let track = self.track_mut();
+            track.instrument = instrument;
+            track.channel = channel;
+            ev.push(EditorEvent::SongChanged);
+        }
+        ev.push(EditorEvent::Status(format!("{} on {}", instrument_status(&self.song.tracks[self.track_index]), self.track_label())));
+        Ok(())
+    }
+
+    /// Puts the track on channel 10 with drum kit `kit`, naming it `Drums` unless the
+    /// user already named it.
+    fn set_drum_kit(&mut self, kit: u16, ev: &mut Vec<EditorEvent>) -> Result<(), EditError> {
+        if kit > MAX_PRESET {
+            return Err(EditError::BadValue(format!("kit {kit} is not 0-{MAX_PRESET}")));
+        }
+        let track = self.current_track()?;
+        let Instrument::SoundFont { path, .. } = &track.instrument;
+        let instrument = Instrument::SoundFont { path: path.clone(), bank: 0, preset: kit };
+        let rename = is_default_track_name(&track.name);
+        if track.instrument != instrument || !track.is_drums() || rename {
+            self.commit(None);
+            let track = self.track_mut();
+            track.instrument = instrument;
+            track.channel = DRUM_CHANNEL;
+            if rename {
+                track.name = "Drums".to_string();
+            }
+            ev.push(EditorEvent::SongChanged);
+        }
+        ev.push(EditorEvent::Status(format!("{} on {}", instrument_status(&self.song.tracks[self.track_index]), self.track_label())));
         Ok(())
     }
 
@@ -1397,7 +1451,7 @@ impl Editor {
             *preset = next;
             ev.push(EditorEvent::SongChanged);
         }
-        ev.push(EditorEvent::Status(format!("{} on {}", instrument_label(&self.song.tracks[self.track_index].instrument), self.track_label())));
+        ev.push(EditorEvent::Status(format!("{} on {}", instrument_status(&self.song.tracks[self.track_index]), self.track_label())));
         Ok(())
     }
 
@@ -1535,13 +1589,33 @@ fn lane_status(lane: Option<LaneKind>) -> String {
     }
 }
 
-/// `"sf2 gm.sf2 preset 33 bank 0"` (or `"sf2 default ..."`) for the status bar.
-fn instrument_label(instrument: &Instrument) -> String {
-    match instrument {
-        Instrument::SoundFont { path, bank, preset } => {
-            let file = if path.as_os_str().is_empty() { "default".to_string() } else { path.display().to_string() };
-            format!("sf2 {file} preset {preset} bank {bank}")
-        }
+/// What a track plays, by its General MIDI name: `"Electric Bass (finger)"`, or
+/// `"Drums: Standard"` on the drum channel. A SoundFont can name its presets
+/// differently; the app prefers the font's own names when it has them.
+pub fn instrument_name(track: &Track) -> String {
+    let Instrument::SoundFont { bank, preset, .. } = &track.instrument;
+    if track.is_drums() {
+        return match crate::gm::drum_kit_name(*preset) {
+            Some(kit) => format!("Drums: {kit}"),
+            None => format!("Drums: kit {preset}"),
+        };
+    }
+    let name = crate::gm::program_name(*preset);
+    if *bank == 0 {
+        name.to_string()
+    } else {
+        format!("{name} bank {bank}")
+    }
+}
+
+/// [`instrument_name`] plus the SoundFont file when the track has its own, for the
+/// status bar.
+fn instrument_status(track: &Track) -> String {
+    let Instrument::SoundFont { path, .. } = &track.instrument;
+    if path.as_os_str().is_empty() {
+        instrument_name(track)
+    } else {
+        format!("{} from {}", instrument_name(track), path.display())
     }
 }
 
@@ -1700,6 +1774,6 @@ mod tests {
         assert_eq!(EditError::BadValue("channel 17 is not 1-16".into()).to_string(), "channel 17 is not 1-16");
         assert_eq!(lane_status(None), "lane hidden");
         assert_eq!(lane_status(Some(LaneKind::ModWheel)), "lane: mod wheel");
-        assert_eq!(instrument_label(&Instrument::default()), "sf2 default preset 0 bank 0");
+        assert_eq!(instrument_name(&Track::new("x")), "Acoustic Grand Piano");
     }
 }

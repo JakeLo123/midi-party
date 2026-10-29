@@ -10,7 +10,9 @@ use clap::{Parser, Subcommand};
 use mp_audio::demo::demo_song;
 use mp_audio::render::{render_song, write_audio_file, RenderOptions};
 use mp_audio::stream::open_default_output;
-use mp_audio::{load_soundfont, render_song_from, RenderSong, SoundFontSynth, Synth};
+use mp_audio::{
+    has_drum_kit, load_soundfont, render_song_from, RenderSong, RenderTrack, SoundFontSynth, Synth, DRUM_CHANNEL,
+};
 use mp_core::{default_keymap, project, try_drive_with, Editor, Keymap, Song};
 
 #[derive(Parser)]
@@ -55,6 +57,9 @@ enum Cmd {
     Render {
         #[arg(long)]
         sf2: PathBuf,
+        /// Drum kit for channel-10 tracks, used when --sf2 has no kits of its own.
+        #[arg(long, default_value = "assets/soundfonts/fluidr3-standard-kit.sf2")]
+        drums_sf2: PathBuf,
         #[arg(long)]
         out: PathBuf,
         /// Project file; omit to render the demo.
@@ -72,13 +77,23 @@ fn main() {
     }
 }
 
-/// One instrument per track, all from the same SoundFont.
 type SynthList = Vec<Option<Box<dyn Synth>>>;
 
-fn synths_for(sf2: &Path, count: usize, sample_rate: u32) -> Result<SynthList, Box<dyn Error>> {
+/// One instrument per track from the SoundFont, except that channel-10 tracks
+/// play the drum kit when the SoundFont has no kits of its own.
+fn synths_for(sf2: &Path, drums_sf2: &Path, tracks: &[RenderTrack], sample_rate: u32) -> Result<SynthList, Box<dyn Error>> {
     let sf = load_soundfont(sf2)?;
-    (0..count)
-        .map(|_| Ok(Some(Box::new(SoundFontSynth::new(&sf, sample_rate)?) as Box<dyn Synth>)))
+    let needs_kit = !has_drum_kit(&sf) && tracks.iter().any(|t| t.channel == DRUM_CHANNEL);
+    let kit = if needs_kit { Some(load_soundfont(drums_sf2)?) } else { None };
+    tracks
+        .iter()
+        .map(|t| {
+            let font = match &kit {
+                Some(kit) if t.channel == DRUM_CHANNEL => kit,
+                _ => &sf,
+            };
+            Ok(Some(Box::new(SoundFontSynth::new(font, sample_rate)?) as Box<dyn Synth>))
+        })
         .collect()
 }
 
@@ -140,12 +155,12 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             }
             println!();
         }
-        Cmd::Render { sf2, out, song, sample_rate } => {
+        Cmd::Render { sf2, drums_sf2, out, song, sample_rate } => {
             let render: RenderSong = match song {
                 Some(path) => render_song_from(&project::load(&path)?),
                 None => demo_song(),
             };
-            let synths = synths_for(&sf2, render.tracks.len(), sample_rate)?;
+            let synths = synths_for(&sf2, &drums_sf2, &render.tracks, sample_rate)?;
             let opts = RenderOptions { sample_rate, ..RenderOptions::default() };
             let samples = render_song(render, synths, opts)?;
             write_audio_file(&out, &samples, sample_rate)?;
