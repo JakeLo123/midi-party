@@ -34,6 +34,10 @@ pub enum RollAction {
     BoxSelect { t0: u64, t1: u64, p_lo: u8, p_hi: u8, add: bool },
     /// Click in the ruler: move the playhead.
     SetPlayhead { tick: u64 },
+    /// A drag along the ruler began: pause playback until it ends.
+    ScrubStart,
+    /// The ruler drag ended: resume playback if the drag paused it.
+    ScrubEnd,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -41,6 +45,7 @@ enum DragKind {
     Move,
     Resize,
     Box,
+    Scrub,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -234,6 +239,14 @@ impl RollView {
             self.draw_key_column(&painter, rect, area, theme, &font);
         }
         self.draw_ruler(&painter, rect, area, editor, theme, &font);
+        if let Some(tick) = playhead_tick {
+            let ruler = Rect::from_min_max(Pos2::new(area.left(), rect.top()), Pos2::new(rect.right(), area.top()));
+            let x = self.x_of(area, tick);
+            let color = theme.color("playhead");
+            let p = painter.with_clip_rect(ruler);
+            p.vline(x, ruler.y_range(), Stroke::new(2.0, color));
+            draw_playhead_marker(&p, x, ruler.bottom(), color);
+        }
         rect
     }
 
@@ -291,7 +304,12 @@ impl RollView {
             return;
         }
 
-        if response.drag_started() && in_area {
+        if response.drag_started() && in_ruler {
+            let tick = snap(self.tick_at_x(area, pos.x));
+            actions.push(RollAction::ScrubStart);
+            actions.push(RollAction::SetPlayhead { tick });
+            self.drag = Some(Drag { kind: DragKind::Scrub, origin: (0.0, 0), applied: (tick as i64, 0), add: false });
+        } else if response.drag_started() && in_area {
             let origin = (self.tick_at_x(area, pos.x), self.pitch_at_y(area, pos.y));
             let kind = match self.note_hit(area, editor, pos) {
                 Some((id, on_edge)) => {
@@ -314,6 +332,14 @@ impl RollView {
                 let tick = self.tick_at_x(area, pos.x);
                 let pitch = self.pitch_at_y(area, pos.y);
                 match drag.kind {
+                    // Re-seeking the same cell every frame would restart playback over and over.
+                    DragKind::Scrub => {
+                        let cell = snap(tick) as i64;
+                        if cell != drag.applied.0 {
+                            actions.push(RollAction::SetPlayhead { tick: cell as u64 });
+                            drag.applied.0 = cell;
+                        }
+                    }
                     DragKind::Move | DragKind::Resize => {
                         let steps = ((tick - drag.origin.0) / grid as f64).round() as i64;
                         let semis = if drag.kind == DragKind::Move { pitch - drag.origin.1 } else { 0 };
@@ -347,6 +373,9 @@ impl RollView {
 
     fn finish_drag(&mut self, area: Rect, _editor: &Editor, actions: &mut Vec<RollAction>, pos: Option<Pos2>) {
         if let Some(drag) = self.drag.take() {
+            if drag.kind == DragKind::Scrub {
+                actions.push(RollAction::ScrubEnd);
+            }
             if drag.kind == DragKind::Box {
                 if let Some(pos) = pos {
                     let tick = self.tick_at_x(area, pos.x);
@@ -598,4 +627,11 @@ impl RollView {
         }
         painter.hline(ruler.x_range(), area.top() - 0.5, Stroke::new(1.0, theme.color("bar_line")));
     }
+}
+
+/// The playhead's handle in a ruler: a small triangle pointing down at `bottom`.
+pub(crate) fn draw_playhead_marker(painter: &Painter, x: f32, bottom: f32, color: Color32) {
+    let x = x.round();
+    let points = vec![Pos2::new(x - 6.0, bottom - 8.0), Pos2::new(x + 6.0, bottom - 8.0), Pos2::new(x, bottom)];
+    painter.add(egui::Shape::convex_polygon(points, color, Stroke::NONE));
 }
