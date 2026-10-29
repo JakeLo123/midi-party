@@ -161,12 +161,12 @@ fn default_keymap_loads_and_every_binding_is_a_real_command() {
     assert_eq!(bound(&keymap, "Alt+Shift+Right"), Command::MoveSelected { dir: Dir::Right, unit: Unit::Bar });
     assert_eq!(bound(&keymap, "Alt+Shift+Up"), Command::MoveSelected { dir: Dir::Up, unit: Unit::Octave });
     assert_eq!(bound(&keymap, "Enter"), Command::PlayheadToStart);
-    assert_eq!(bound(&keymap, "Shift+Space"), Command::PlayFromCursor);
+    assert_eq!(bound(&keymap, "Shift+Enter"), Command::PlayheadToCursor);
+    assert_eq!(bound(&keymap, "Alt+Enter"), Command::CursorToPlayhead);
     assert_eq!(bound(&keymap, "Cmd+x"), Command::Cut);
     assert_eq!(bound(&keymap, "Cmd+Shift+z"), Command::Redo);
     // the keys the plan promises
     for (cmd, key) in [
-        (Command::RepeatLastEdit, "."),
         (Command::Quantize { grid: None, strength: 100, swing: 0 }, "q"),
         (Command::Legato, "Shift+l"),
         (Command::Humanize { velocity: 8, timing: 10 }, "h"),
@@ -182,7 +182,10 @@ fn default_keymap_loads_and_every_binding_is_a_real_command() {
         (Command::NudgeSelected { ticks: -10 }, "Alt+,"),
         (Command::TogglePlay, "Space"),
         (Command::PlayheadToStart, "Enter"),
-        (Command::PlayFromCursor, "Shift+Space"),
+        (Command::PlayheadToCursor, "Shift+Enter"),
+        (Command::CursorToPlayhead, "Alt+Enter"),
+        (Command::PlayheadPrevBar, ","),
+        (Command::PlayheadNextBar, "."),
         (Command::ToggleCheatSheet, "Shift+/"),
         (Command::EnterCommandLine, "Shift+;"),
         (Command::ZoomIn, "Cmd+="),
@@ -358,7 +361,6 @@ fn insert_note_at_cursor() {
     assert!(has_song_changed(&ev));
     assert_eq!(auditioned(&ev), 1);
     assert_eq!(status(&ev), vec!["inserted C#4 (1/16)"]);
-    assert_eq!(e.last_edit, Some(Command::InsertNote));
 }
 
 #[test]
@@ -444,7 +446,6 @@ fn shift_arrows_box_select() {
     assert_eq!(ids(&e), vec![1, 2], "shrinking the box deselects");
     assert_eq!(e.box_anchor, Some(Editor::new(song3()).cursor), "the anchor stays put");
     assert_eq!(e.undo.undo_depth(), 0, "selecting is not an edit");
-    assert!(e.last_edit.is_none());
     // a count extends that many steps
     let e = drive(song3(), &km(), "4 Shift+Right 7 Shift+Up");
     assert_eq!(ids(&e), vec![1, 2, 3]);
@@ -700,7 +701,6 @@ fn transpose_selected() {
     assert_eq!(pitches(&e), vec![72, 76, 79]);
     assert_eq!(auditioned(&ev), 3);
     assert_eq!(last_status(&ev), "transposed 3 notes +12 st");
-    assert_eq!(e.last_edit, Some(octave_up.clone()));
     e.execute(&down, None).unwrap();
     e.execute(&down, None).unwrap();
     e.execute(&up, Some(2)).unwrap();
@@ -737,7 +737,6 @@ fn copy_paste() {
     assert_eq!(e.cursor.tick, Tick(3840 + 5 * G), "cursor jumps to the end of the paste");
     assert_eq!(auditioned(&ev), 3);
     assert!(has_song_changed(&ev));
-    assert_eq!(e.last_edit, Some(Command::Paste));
     // copy with nothing selected uses the note under the cursor
     let e = drive(song3(), &km(), "c Cmd+Right p");
     assert_eq!(starts(&e), vec![0, G, 4 * G, 3840]);
@@ -755,7 +754,6 @@ fn cut_is_copy_plus_delete_in_one_undo_step() {
     assert!(has_song_changed(&ev));
     assert_eq!(last_status(&ev), "cut 3 notes");
     assert_eq!(e.undo.undo_depth(), 1);
-    assert_eq!(e.last_edit, Some(Command::Cut));
     drive_with(&mut e, &mut k, "p");
     assert_eq!(starts(&e), vec![0, G, 4 * G]);
     assert_eq!(pitches(&e), vec![60, 64, 67]);
@@ -885,7 +883,6 @@ fn undo_count_and_every_edit_is_undoable() {
 fn non_edits_are_not_undoable() {
     let e = drive(song3(), &km(), "Right Up Up Up Up s Shift+Right Escape a Escape g t c Cmd+Right Space Shift+/");
     assert_eq!(e.undo.undo_depth(), 0);
-    assert!(e.last_edit.is_none());
 }
 
 #[test]
@@ -1195,7 +1192,6 @@ fn ramp_velocity_over_the_selection() {
     assert_eq!(velocities(&e), vec![40, 40, 40, 56, 72, 72, 88, 104, 120]);
     assert!(has_song_changed(&ev));
     assert_eq!(last_status(&ev), "velocity ramp 40 → 120 on 9 notes");
-    assert_eq!(e.last_edit, Some(Command::RampVelocity { from: 40, to: 120 }));
     assert_eq!(e.undo.undo_depth(), 1);
     drive_with(&mut e, &mut k, "u");
     assert_eq!(e.song, before);
@@ -1227,7 +1223,6 @@ fn humanize_is_deterministic_and_undoable() {
         assert!(n.velocity.abs_diff(orig.velocity) <= 8, "{n:?} vs {orig:?}");
         assert!(n.start.get().abs_diff(orig.start.get()) <= 10, "{n:?} vs {orig:?}");
     }
-    assert_eq!(e.last_edit, Some(Command::Humanize { velocity: 8, timing: 10 }));
     let other = drive(before.clone(), &km(), "a h");
     assert_eq!(e.song, other.song, "same seed, same keys, same result");
     drive_with(&mut e, &mut k, "h");
@@ -1260,7 +1255,6 @@ fn quantize_starts() {
     assert_eq!(starts(&e)[6], 2880, "the off-grid B4 snaps to the 1/16 grid");
     assert_eq!(last_status(&ev), "quantized 1 of 9 notes to 1/16");
     assert!(has_song_changed(&ev));
-    assert_eq!(e.last_edit, Some(Command::Quantize { grid: None, strength: 100, swing: 0 }));
     let ev = drive_with(&mut e, &mut k, "q");
     assert_eq!(last_status(&ev), "already on the 1/16 grid");
     assert!(!has_song_changed(&ev));
@@ -1295,7 +1289,6 @@ fn quantize_uses_the_editor_swing_when_its_own_is_zero() {
     assert_eq!(e.swing, 100);
     assert_eq!(status(&ev), vec!["swing 100%"]);
     assert_eq!(e.undo.undo_depth(), 0, "a setting, not an edit");
-    assert_eq!(e.last_edit, Some(Command::Quantize { grid: None, strength: 100, swing: 0 }), "still the undone `q`");
     let ev = drive_with(&mut e, &mut k, "q");
     assert_eq!(starts(&e), vec![720], "swung off-step");
     assert_eq!(last_status(&ev), "quantized 1 of 1 note to 1/8 with 100% swing");
@@ -1338,7 +1331,6 @@ fn nudge_selected_moves_off_grid_and_coalesces() {
     assert_eq!(e.cursor.tick, Tick::ZERO, "the cursor stays on the grid");
     assert_eq!(auditioned(&ev), 1);
     assert_eq!(last_status(&ev), "nudged 1 note +10 ticks");
-    assert_eq!(e.last_edit, Some(Command::NudgeSelected { ticks: 10 }));
     let ev = drive_with(&mut e, &mut k, "Right Up Up Up Up Alt+.");
     assert_eq!(starts(&e), vec![10, G + 10, 4 * G]);
     assert_eq!(auditioned(&ev), 1);
@@ -1369,8 +1361,6 @@ fn set_length() {
     let ev = drive_with(&mut e, &mut k, "4 l");
     assert_eq!(durations(&e)[0], 4 * G);
     assert_eq!(last_status(&ev), "length 4 grid steps on 1 note");
-    assert_eq!(e.last_edit, Some(Command::SetLength { steps: 1 }));
-    assert_eq!(e.last_edit_count, Some(4));
     drive_with(&mut e, &mut k, "a 2 l");
     assert_eq!(durations(&e), vec![2 * G, 2 * G, 2 * G]);
     assert_eq!(e.undo.undo_depth(), 2);
@@ -1389,7 +1379,6 @@ fn legato_extends_to_the_next_note() {
     assert_eq!(durations(&e), vec![G, 3 * G, G], "C4 already touches E4; G4 has nothing after it");
     assert_eq!(last_status(&ev), "legato: extended 1 note");
     assert!(has_song_changed(&ev));
-    assert_eq!(e.last_edit, Some(Command::Legato));
     let ev = drive_with(&mut e, &mut k, "Shift+l");
     assert_eq!(last_status(&ev), "nothing to extend");
     assert_eq!(e.undo.undo_depth(), 1);
@@ -1398,44 +1387,6 @@ fn legato_extends_to_the_next_note() {
     // a chord extends every note to the next start
     let e = drive(chords(), &km(), "a Shift+l");
     assert_eq!(durations(&e), vec![960, 960, 960, 960, 980, 980, 940, 240, 240]);
-}
-
-// ---------------------------------------------------------------- repeat
-
-#[test]
-fn repeat_last_edit() {
-    let mut e = Editor::new(Song::new_empty());
-    let mut k = km();
-    let err = try_drive_with(&mut e, &mut k, ".").unwrap_err();
-    assert_eq!(err, DriveError::Edit { key: ".".into(), source: EditError::NothingToRepeat });
-    let ev = drive_with(&mut e, &mut k, "n Right .");
-    assert_eq!(starts(&e), vec![0, G], "insert repeated at the new cursor");
-    assert_eq!(last_status(&ev), "inserted C4 (1/16)");
-    assert_eq!(e.last_edit, Some(Command::InsertNote), "repeat is not itself remembered");
-    // the count is remembered, and can be overridden
-    drive_with(&mut e, &mut k, "Right 3 n Right .");
-    assert_eq!(durations(&e), vec![G, G, 3 * G, 3 * G]);
-    assert_eq!(e.last_edit_count, Some(3));
-    drive_with(&mut e, &mut k, "Right 2 .");
-    assert_eq!(durations(&e)[4], 2 * G);
-    assert_eq!(e.last_edit_count, Some(2), "the override becomes the new count");
-    // works for every editing command, e.g. a length change on another note
-    drive_with(&mut e, &mut k, "Cmd+Right n ] ]");
-    assert_eq!(e.undo.undo_depth(), 7, "the two `]` coalesce");
-    drive_with(&mut e, &mut k, "Cmd+Left Escape .");
-    assert_eq!(e.last_edit, Some(Command::ChangeLength { delta_steps: 1 }));
-    assert_eq!(durations(&e)[4], 3 * G, "`]` repeated on the note under the cursor");
-    assert_eq!(e.undo.undo_depth(), 8);
-    // undo after a repeat undoes just the repeat
-    drive_with(&mut e, &mut k, "u");
-    assert_eq!(durations(&e)[4], 2 * G);
-    // deleting and repeating
-    let e = drive(song3(), &km(), "x Right Up Up Up Up .");
-    assert_eq!(starts(&e), vec![4 * G]);
-    // non-edits in between do not become the last edit
-    let mut e = Editor::new(song3());
-    drive_with(&mut e, &mut k, "x Up Up Up Up Right Shift+Right Escape a Escape t .");
-    assert_eq!(starts(&e), vec![4 * G], "the repeat deleted a second note");
 }
 
 // ---------------------------------------------------------------- chords
@@ -1450,7 +1401,6 @@ fn insert_chord() {
     assert_eq!(ids(&e), vec![1, 2, 3], "the chord becomes the selection");
     assert_eq!(auditioned(&ev), 3);
     assert_eq!(status(&ev), vec!["inserted chord C4 E4 G4 (1/16)"]);
-    assert_eq!(e.last_edit, Some(Command::InsertChord { intervals: vec![0, 4, 7] }));
     drive_with(&mut e, &mut k, "Right 2 Shift+n");
     assert_eq!(durations(&e)[3..], [2 * G, 2 * G, 2 * G]);
     assert_eq!(e.undo.undo_depth(), 2);
@@ -1487,18 +1437,41 @@ fn transport_commands_only_emit_events() {
     assert_eq!(e.cursor.tick, Tick(G));
     let ev = e.execute(&Command::Play, None).unwrap();
     assert_eq!(ev, vec![EditorEvent::Transport(TransportRequest::Play { from: Tick::ZERO })]);
-    let ev = e.execute(&Command::PlayFromCursor, None).unwrap();
-    assert_eq!(ev, vec![EditorEvent::Transport(TransportRequest::Play { from: Tick(G) })]);
+    let ev = drive_with(&mut e, &mut k, "Shift+Enter");
+    assert_eq!(ev, vec![EditorEvent::Transport(TransportRequest::Seek { to: Tick(G) })]);
+    let ev = drive_with(&mut e, &mut k, ", 3 .");
+    assert_eq!(
+        ev,
+        vec![
+            EditorEvent::Transport(TransportRequest::StepBars { bars: -1 }),
+            EditorEvent::Transport(TransportRequest::StepBars { bars: 3 }),
+        ]
+    );
+    let ev = drive_with(&mut e, &mut k, "Alt+Enter");
+    assert_eq!(ev, vec![EditorEvent::Transport(TransportRequest::CursorToPlayhead)]);
+    assert_eq!(e.cursor.tick, Tick(G));
     let ev = e.execute(&Command::Stop, Some(5)).unwrap();
     assert_eq!(ev, vec![EditorEvent::Transport(TransportRequest::Stop)]);
     assert_eq!(e.song, song3());
     assert_eq!(e.undo.undo_depth(), 0);
-    assert!(e.last_edit.is_none());
     // transport keys end a box in progress but keep what it selected
     let ev = drive_with(&mut e, &mut k, "Shift+Left Space");
     assert!(ev.contains(&EditorEvent::Transport(TransportRequest::Toggle)));
     assert_eq!(e.box_anchor, None);
     assert_eq!(ids(&e), vec![1]);
+}
+
+#[test]
+fn cursor_to_grid_line_at_snaps_down() {
+    let mut e = Editor::new(song3());
+    let pitch = e.cursor.pitch;
+    e.cursor_to_grid_line_at(Tick(3 * G + G - 1));
+    assert_eq!(e.cursor, Cursor { tick: Tick(3 * G), pitch });
+    e.cursor_to_grid_line_at(Tick(5 * G));
+    assert_eq!(e.cursor.tick, Tick(5 * G), "already on a line: stays");
+    e.execute(&cmdline::parse("grid 1/4").unwrap(), None).unwrap();
+    e.cursor_to_grid_line_at(Tick(7 * G));
+    assert_eq!(e.cursor.tick, Tick(4 * G), "follows the grid size");
 }
 
 #[test]
@@ -1533,7 +1506,6 @@ fn view_and_app_commands_only_emit_events() {
     let ev = drive_with(&mut e, &mut k, "Shift+;");
     assert_eq!(ev, vec![EditorEvent::OpenCommandLine]);
     assert_eq!(e.undo.undo_depth(), 0);
-    assert!(e.last_edit.is_none());
 }
 
 #[test]
@@ -1601,7 +1573,6 @@ fn show_track_switches_and_clears_selection_without_undo() {
     assert!(e.selection.is_empty());
     assert!(e.box_anchor.is_none());
     assert_eq!(e.undo.undo_depth(), 0);
-    assert!(e.last_edit.is_none());
 }
 
 #[test]
@@ -1940,7 +1911,6 @@ fn show_and_cycle_lane() {
     e.execute(&Command::ShowLane { kind: None }, None).unwrap();
     assert_eq!(e.lane, None);
     assert_eq!(e.undo.undo_depth(), 0, "showing a lane is not an edit");
-    assert!(e.last_edit.is_none());
     assert_eq!(e.song, song3());
 }
 
@@ -1969,7 +1939,6 @@ fn set_and_nudge_lane_value_at_the_cursor() {
     assert_eq!(sustain(&e), vec![(0, 90)]);
     assert!(has_song_changed(&ev));
     assert_eq!(status(&ev), vec!["sustain 90 at 1:1:000"]);
-    assert_eq!(e.last_edit, Some(Command::SetLaneValue { value: 90 }));
     // count overrides the value; values clamp to the lane's range; same tick replaces
     drive_with(&mut e, &mut k, "Right");
     e.execute(&Command::SetLaneValue { value: 90 }, Some(127)).unwrap();
@@ -1999,13 +1968,6 @@ fn set_and_nudge_lane_value_at_the_cursor() {
     drive_with(&mut e, &mut k, "9 9 Ctrl+Shift+Down");
     assert_eq!(e.track().unwrap().lanes.pitch_bend[0].value, -8192);
     assert_eq!(e.track().unwrap().lanes.pitch_bend.len(), 1);
-    // repeat-last-edit replays a lane edit at the new cursor
-    e.execute(&Command::ShowLane { kind: Some(LaneKind::ModWheel) }, None).unwrap();
-    drive_with(&mut e, &mut k, "Cmd+Right");
-    e.execute(&Command::SetLaneValue { value: 64 }, None).unwrap();
-    drive_with(&mut e, &mut k, "Right .");
-    let mods: Vec<(u64, i32)> = e.track().unwrap().lanes.mod_wheel.iter().map(|p| (p.tick.get(), p.value)).collect();
-    assert_eq!(mods, vec![(3840 + 2 * G, 64), (3840 + 3 * G, 64)]);
 }
 
 #[test]
