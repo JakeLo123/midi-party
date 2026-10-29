@@ -24,8 +24,8 @@ pub enum TracksAction {
     ShowTrack { track: usize },
     /// Click on a lane: edit that track with the cursor at that tick.
     JumpTo { track: usize, tick: u64 },
-    /// Click in the ruler: move the cursor in time only.
-    SetCursorTick { tick: u64 },
+    /// Click in the ruler: move the playhead.
+    SetPlayhead { tick: u64 },
     /// Click on the instrument line of a row header: choose that track's sound.
     PickInstrument { track: usize },
 }
@@ -192,7 +192,7 @@ impl TracksArea {
         let ruler_response = ui.interact(ruler, ui.scope_id().with("tracks_ruler"), Sense::click());
         if ruler_response.clicked() {
             if let Some(pos) = ruler_response.interact_pointer_pos() {
-                actions.push(TracksAction::SetCursorTick { tick: snap(self.tick_at_x(lanes_x.min, pos.x)) });
+                actions.push(TracksAction::SetPlayhead { tick: snap(self.tick_at_x(lanes_x.min, pos.x)) });
             }
         }
 

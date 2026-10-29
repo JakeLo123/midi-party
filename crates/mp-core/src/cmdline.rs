@@ -145,6 +145,7 @@ const SPECS: &[Spec] = &[
     Spec { name: "stop", args: "", aliases: &[] },
     Spec { name: "toggle_play", args: "", aliases: &[] },
     Spec { name: "play_from_cursor", args: "", aliases: &[] },
+    Spec { name: "playhead_to_start", args: "", aliases: &[] },
     Spec { name: "enter_command_line", args: "", aliases: &[] },
 ];
 
@@ -635,6 +636,7 @@ pub fn parse(line: &str) -> Result<Command, CmdLineError> {
         "stop" => Command::Stop,
         "toggle_play" => Command::TogglePlay,
         "play_from_cursor" => Command::PlayFromCursor,
+        "playhead_to_start" => Command::PlayheadToStart,
         "enter_command_line" => Command::EnterCommandLine,
         other => return Err(CmdLineError::UnknownCommand(other.to_string())),
     };
@@ -755,6 +757,7 @@ pub fn to_line(cmd: &Command) -> String {
         | Command::Stop
         | Command::TogglePlay
         | Command::PlayFromCursor
+        | Command::PlayheadToStart
         | Command::EnterCommandLine => Vec::new(),
     };
     if args.is_empty() {

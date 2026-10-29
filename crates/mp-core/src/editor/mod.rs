@@ -74,16 +74,18 @@ impl Default for Cursor {
     }
 }
 
-/// What a transport command asks the app to do. The editor has no playhead, so every
-/// start position is a tick it chose (the cursor or the song start).
+/// What a transport command asks the app to do. The app owns the playhead; a request
+/// that names a tick picked it from the cursor or the song start.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransportRequest {
-    /// Start playing at `from`.
+    /// Move the playhead to `from` and start playing.
     Play { from: Tick },
-    /// Stop playing.
+    /// Stop playing; the playhead stays where it is.
     Stop,
-    /// Stop if playing, otherwise start at `from`.
-    Toggle { from: Tick },
+    /// Stop if playing, otherwise play from the playhead.
+    Toggle,
+    /// Move the playhead to `to` without changing whether it is playing.
+    Seek { to: Tick },
 }
 
 /// What a view command asks the app to do.
@@ -583,12 +585,11 @@ impl Editor {
             // -------------------------------------------------------------- transport
             Command::Play => ev.push(EditorEvent::Transport(TransportRequest::Play { from: Tick::ZERO })),
             Command::Stop => ev.push(EditorEvent::Transport(TransportRequest::Stop)),
-            Command::TogglePlay => {
-                ev.push(EditorEvent::Transport(TransportRequest::Toggle { from: self.cursor.tick }));
-            }
+            Command::TogglePlay => ev.push(EditorEvent::Transport(TransportRequest::Toggle)),
             Command::PlayFromCursor => {
                 ev.push(EditorEvent::Transport(TransportRequest::Play { from: self.cursor.tick }));
             }
+            Command::PlayheadToStart => ev.push(EditorEvent::Transport(TransportRequest::Seek { to: Tick::ZERO })),
 
             // -------------------------------------------------------------- command line
             Command::EnterCommandLine => ev.push(EditorEvent::OpenCommandLine),

@@ -22,9 +22,11 @@ Write comments for a future reader of the code. That reader has never seen the c
 - **When editing existing code,** don't add comments that describe the edit. If an existing comment is now wrong, fix or delete it.
 - **Inner documentation (//!) is okay** for crates or modules.
 - **Don't turn our README.md into an API reference.** README is a digital front door for developers. The code is the API reference.
+- Don't add to the changelog. Let humans do that.
 
 Examples:
 
+```rust
 // Bad: references the session
 // Changed to use a Set as discussed, for faster lookups
 const seen = new Set<string>();
@@ -39,3 +41,4 @@ const seenIds = new Set<string>();
 // Good: explains a non-obvious why
 // Stripe retries webhooks for up to 3 days, so dedupe on event ID.
 const seenEventIds = new Set<string>();
+```

@@ -32,8 +32,8 @@ pub enum RollAction {
     ResizeSelection { grid_steps: i32 },
     /// A rubber-band box: notes starting in [t0, t1) with pitch in [p_lo, p_hi].
     BoxSelect { t0: u64, t1: u64, p_lo: u8, p_hi: u8, add: bool },
-    /// Click in the ruler: move the cursor in time only.
-    SetCursorTick { tick: u64 },
+    /// Click in the ruler: move the playhead.
+    SetPlayhead { tick: u64 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -278,7 +278,7 @@ impl RollView {
         }
         if response.clicked() {
             if in_ruler {
-                actions.push(RollAction::SetCursorTick { tick: snap(self.tick_at_x(area, pos.x)) });
+                actions.push(RollAction::SetPlayhead { tick: snap(self.tick_at_x(area, pos.x)) });
             } else if in_area {
                 match self.note_hit(area, editor, pos) {
                     Some((id, _)) => actions.push(RollAction::ClickNote { id, toggle: shift }),

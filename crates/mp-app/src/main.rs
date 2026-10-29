@@ -274,6 +274,9 @@ struct App {
     started: Instant,
     smoke_seconds: Option<f64>,
     screenshot: Option<PathBuf>,
+    /// Where playback starts or resumes. Follows the audio engine while playing and
+    /// rests where it stopped; a ruler click or Enter moves it. Independent of the cursor.
+    playhead: Tick,
 }
 
 impl App {
@@ -361,6 +364,7 @@ impl App {
             started: Instant::now(),
             smoke_seconds: args.smoke_seconds,
             screenshot: args.screenshot,
+            playhead: Tick::ZERO,
         };
         app.apply_events(startup_events);
         for command in &args.commands {
@@ -374,13 +378,49 @@ impl App {
         song.tempo_map.tick_to_seconds(song.ppq, tick)
     }
 
-    fn playhead_tick(&self) -> Option<f64> {
-        let audio = self.audio.as_ref().ok()?;
-        if !audio.is_playing() {
-            return None;
+    fn is_playing(&self) -> bool {
+        self.audio.as_ref().is_ok_and(Audio::is_playing)
+    }
+
+    /// Pull the playhead along with the audio engine while it plays, so it rests
+    /// where playback stopped.
+    fn sync_playhead(&mut self) {
+        if let Ok(audio) = &self.audio {
+            if audio.is_playing() {
+                let song = &self.editor.song;
+                self.playhead = song.tempo_map.seconds_to_tick(song.ppq, audio.playhead_seconds());
+            }
         }
-        let song = &self.editor.song;
-        Some(song.tempo_map.seconds_to_tick(song.ppq, audio.playhead_seconds()).get() as f64)
+    }
+
+    fn seek_playhead(&mut self, tick: Tick) {
+        self.playhead = tick;
+        let seconds = self.tick_seconds(tick);
+        if let Ok(audio) = &mut self.audio {
+            if let Err(e) = audio.seek(seconds) {
+                self.status = format!("audio error: {e}");
+            }
+        }
+    }
+
+    fn apply_transport(&mut self, request: TransportRequest) {
+        match request {
+            TransportRequest::Play { from } => {
+                self.playhead = from;
+                let seconds = self.tick_seconds(from);
+                self.with_audio(|a| a.play_from(seconds).map(|_| "playing".into()));
+            }
+            TransportRequest::Stop => self.with_audio(|a| a.stop().map(|_| "stopped".into())),
+            TransportRequest::Toggle => {
+                if self.is_playing() {
+                    self.with_audio(|a| a.stop().map(|_| "stopped".into()));
+                } else {
+                    let seconds = self.tick_seconds(self.playhead);
+                    self.with_audio(|a| a.play_from(seconds).map(|_| "playing".into()));
+                }
+            }
+            TransportRequest::Seek { to } => self.seek_playhead(to),
+        }
     }
 
     fn with_audio(&mut self, f: impl FnOnce(&mut Audio) -> Result<String, mp_audio::AudioError>) {
@@ -468,24 +508,7 @@ impl App {
                 }
                 EditorEvent::OpenCommandLine => self.cmdline = Some(String::new()),
                 EditorEvent::Status(s) => self.status = s,
-                EditorEvent::Transport(request) => {
-                    let secs = |t: Tick| self.tick_seconds(t);
-                    let from = match request {
-                        TransportRequest::Play { from } | TransportRequest::Toggle { from } => secs(from),
-                        TransportRequest::Stop => 0.0,
-                    };
-                    self.with_audio(|a| match request {
-                        TransportRequest::Play { .. } => a.play_from(from).map(|_| "playing".into()),
-                        TransportRequest::Stop => a.stop().map(|_| "stopped".into()),
-                        TransportRequest::Toggle { .. } => {
-                            if a.is_playing() {
-                                a.stop().map(|_| "stopped".into())
-                            } else {
-                                a.play_from(from).map(|_| "playing".into())
-                            }
-                        }
-                    });
-                }
+                EditorEvent::Transport(request) => self.apply_transport(request),
                 EditorEvent::ToggleCheatSheet => self.show_cheat_sheet = !self.show_cheat_sheet,
                 EditorEvent::OpenInstrumentPicker => self.open_picker(self.editor.track_index),
                 EditorEvent::View(ViewRequest::ZoomTime(factor)) => self.view.zoom_time(factor),
@@ -537,7 +560,7 @@ impl App {
                 self.editor.box_anchor = None;
                 self.editor.focus = None;
             }
-            RollAction::SetCursorTick { tick } => self.editor.cursor.tick = Tick(tick),
+            RollAction::SetPlayhead { tick } => self.seek_playhead(Tick(tick)),
             RollAction::ClickNote { id, toggle } => {
                 if let Some(note) = self.editor.track().and_then(|t| t.note(id)).copied() {
                     self.editor.cursor = Cursor { tick: note.start, pitch: note.pitch };
@@ -607,7 +630,7 @@ impl App {
                 self.editor.focus = None;
                 self.editor.cursor.tick = Tick(tick);
             }
-            TracksAction::SetCursorTick { tick } => self.editor.cursor.tick = Tick(tick),
+            TracksAction::SetPlayhead { tick } => self.seek_playhead(Tick(tick)),
             TracksAction::PickInstrument { track } if track < tracks => {
                 self.editor.show_track(track);
                 self.editor.focus = None;
@@ -715,6 +738,7 @@ impl App {
                 self.dirty = false;
                 self.view = RollView::default();
                 self.tracks = TracksArea::default();
+                self.playhead = Tick::ZERO;
                 self.needs_scroll = true;
                 if let Ok(audio) = &mut self.audio {
                     audio.sync_song(&self.editor.song);
@@ -769,6 +793,7 @@ impl App {
                     self.dirty = false;
                     self.view = RollView::default();
                     self.tracks = TracksArea::default();
+                    self.playhead = Tick::ZERO;
                     if let Ok(audio) = &mut self.audio {
                         audio.sync_song(&self.editor.song);
                     }
@@ -926,7 +951,7 @@ impl App {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let transport = match &self.audio {
                     Ok(a) if a.is_playing() => format!("▶ {:6.2}s", a.playhead_seconds()),
-                    Ok(_) => "■".to_string(),
+                    Ok(_) => format!("■ {:6.2}s", self.tick_seconds(self.playhead)),
                     Err(_) => "no audio".to_string(),
                 };
                 ui.label(text(transport, "status_fg"));
@@ -991,7 +1016,9 @@ impl eframe::App for App {
         if let Ok(audio) = &mut self.audio {
             audio.frame_tick();
         }
-        if let Some(tick) = self.playhead_tick() {
+        self.sync_playhead();
+        if self.is_playing() {
+            let tick = self.playhead.get() as f64;
             self.view.follow_playhead(tick, self.roll_rect);
             self.tracks.keep_tick_visible(tick);
             ctx.request_repaint_after(Duration::from_millis(16));
@@ -1004,7 +1031,7 @@ impl eframe::App for App {
         egui::Panel::bottom("status")
             .frame(egui::Frame::NONE.fill(status_bg).inner_margin(4.0))
             .show(ui, |ui| self.draw_status_bar(ui));
-        let playhead = self.playhead_tick();
+        let playhead = Some(self.playhead.get() as f64);
         let background = self.theme.color("background");
         let names: Vec<String> = {
             let tracks = &self.editor.song.tracks;

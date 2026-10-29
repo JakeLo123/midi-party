@@ -455,10 +455,12 @@ pub enum Command {
     Play,
     /// Ask the app to stop playback. Count: ignored.
     Stop,
-    /// Ask the app to stop if playing, else play from the cursor. Count: ignored.
+    /// Ask the app to stop if playing, else play from the playhead. Count: ignored.
     TogglePlay,
-    /// Ask the app to play from the cursor. Count: ignored.
+    /// Ask the app to move the playhead to the cursor and play. Count: ignored.
     PlayFromCursor,
+    /// Ask the app to move the playhead to the start of the song. Count: ignored.
+    PlayheadToStart,
 
     // ------------------------------------------------------------------ mode
     /// Enter Command-line mode (the app then owns the text field). Count: ignored.
@@ -565,6 +567,7 @@ impl Command {
             Command::Stop => "stop",
             Command::TogglePlay => "toggle_play",
             Command::PlayFromCursor => "play_from_cursor",
+            Command::PlayheadToStart => "playhead_to_start",
             Command::EnterCommandLine => "enter_command_line",
         }
     }
@@ -706,8 +709,9 @@ impl Command {
             Command::PedalSelection => "Hold the sustain pedal under the selection".to_string(),
             Command::Play => "Play from the start".to_string(),
             Command::Stop => "Stop".to_string(),
-            Command::TogglePlay => "Play from the cursor / stop".to_string(),
+            Command::TogglePlay => "Play from the playhead / stop".to_string(),
             Command::PlayFromCursor => "Play from the cursor".to_string(),
+            Command::PlayheadToStart => "Move the playhead to the start".to_string(),
             Command::EnterCommandLine => "Open the command line".to_string(),
         }
     }
@@ -715,7 +719,7 @@ impl Command {
     /// Cheat-sheet group.
     pub fn category(&self) -> Category {
         match self {
-            Command::MoveCursor { .. } => Category::Cursor,
+            Command::MoveCursor { .. } | Command::CursorToStart => Category::Cursor,
             Command::ToggleSelectUnderCursor
             | Command::ExtendSelection { .. }
             | Command::SelectAll
@@ -776,11 +780,11 @@ impl Command {
             | Command::ToggleCheatSheet
             | Command::OpenInstrumentPicker
             | Command::EnterCommandLine => Category::View,
-            Command::CursorToStart
-            | Command::Play
+            Command::Play
             | Command::Stop
             | Command::TogglePlay
-            | Command::PlayFromCursor => Category::Transport,
+            | Command::PlayFromCursor
+            | Command::PlayheadToStart => Category::Transport,
             Command::AddTrack
             | Command::RemoveTrack
             | Command::DuplicateTrack
@@ -926,6 +930,7 @@ impl Command {
             Command::Stop,
             Command::TogglePlay,
             Command::PlayFromCursor,
+            Command::PlayheadToStart,
             Command::EnterCommandLine,
         ]
     }

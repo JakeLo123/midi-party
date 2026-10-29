@@ -217,6 +217,10 @@ impl Audio {
         self.handle.stop()
     }
 
+    pub fn seek(&mut self, seconds: f64) -> Result<(), AudioError> {
+        self.handle.seek_seconds(seconds)
+    }
+
     pub fn audition(&mut self, track: usize, key: u8, velocity: u8) -> Result<(), AudioError> {
         self.handle.audition(track, key, velocity, 0.3)
     }

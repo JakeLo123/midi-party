@@ -160,7 +160,8 @@ fn default_keymap_loads_and_every_binding_is_a_real_command() {
     assert_eq!(bound(&keymap, "Ctrl+Alt+Right"), Command::MoveSelected { dir: Dir::Right, unit: Unit::Beat });
     assert_eq!(bound(&keymap, "Alt+Shift+Right"), Command::MoveSelected { dir: Dir::Right, unit: Unit::Bar });
     assert_eq!(bound(&keymap, "Alt+Shift+Up"), Command::MoveSelected { dir: Dir::Up, unit: Unit::Octave });
-    assert_eq!(bound(&keymap, "Enter"), Command::CursorToStart);
+    assert_eq!(bound(&keymap, "Enter"), Command::PlayheadToStart);
+    assert_eq!(bound(&keymap, "Shift+Space"), Command::PlayFromCursor);
     assert_eq!(bound(&keymap, "Cmd+x"), Command::Cut);
     assert_eq!(bound(&keymap, "Cmd+Shift+z"), Command::Redo);
     // the keys the plan promises
@@ -180,7 +181,8 @@ fn default_keymap_loads_and_every_binding_is_a_real_command() {
         (Command::NudgeSelected { ticks: 10 }, "Alt+."),
         (Command::NudgeSelected { ticks: -10 }, "Alt+,"),
         (Command::TogglePlay, "Space"),
-        (Command::CursorToStart, "Enter"),
+        (Command::PlayheadToStart, "Enter"),
+        (Command::PlayFromCursor, "Shift+Space"),
         (Command::ToggleCheatSheet, "Shift+/"),
         (Command::EnterCommandLine, "Shift+;"),
         (Command::ZoomIn, "Cmd+="),
@@ -1479,7 +1481,10 @@ fn transport_commands_only_emit_events() {
     let mut e = Editor::new(song3());
     let mut k = km();
     let ev = drive_with(&mut e, &mut k, "Right Space");
-    assert_eq!(ev, vec![EditorEvent::Transport(TransportRequest::Toggle { from: Tick(G) })]);
+    assert_eq!(ev, vec![EditorEvent::Transport(TransportRequest::Toggle)]);
+    let ev = drive_with(&mut e, &mut k, "Enter");
+    assert_eq!(ev, vec![EditorEvent::Transport(TransportRequest::Seek { to: Tick::ZERO })]);
+    assert_eq!(e.cursor.tick, Tick(G));
     let ev = e.execute(&Command::Play, None).unwrap();
     assert_eq!(ev, vec![EditorEvent::Transport(TransportRequest::Play { from: Tick::ZERO })]);
     let ev = e.execute(&Command::PlayFromCursor, None).unwrap();
@@ -1491,16 +1496,17 @@ fn transport_commands_only_emit_events() {
     assert!(e.last_edit.is_none());
     // transport keys end a box in progress but keep what it selected
     let ev = drive_with(&mut e, &mut k, "Shift+Left Space");
-    assert!(ev.contains(&EditorEvent::Transport(TransportRequest::Toggle { from: Tick::ZERO })));
+    assert!(ev.contains(&EditorEvent::Transport(TransportRequest::Toggle)));
     assert_eq!(e.box_anchor, None);
     assert_eq!(ids(&e), vec![1]);
 }
 
 #[test]
-fn enter_moves_the_cursor_to_the_start() {
+fn cursor_to_start_keeps_the_pitch_and_clears_the_selection() {
     let mut e = Editor::new(song3());
     let mut k = km();
-    drive_with(&mut e, &mut k, "Cmd+Right Right Up a Enter");
+    drive_with(&mut e, &mut k, "Cmd+Right Right Up a");
+    e.execute(&Command::CursorToStart, None).unwrap();
     assert_eq!(e.cursor.tick, Tick::ZERO);
     assert_eq!(e.cursor.pitch, Cursor::default().pitch + 1);
     assert!(e.selection.is_empty());

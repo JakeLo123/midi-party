@@ -159,5 +159,6 @@
 
 # --- transport and command line
 "Space"       = "toggle_play"
-"Enter"       = "cursor_to_start"
+"Shift+Space" = "play_from_cursor"
+"Enter"       = "playhead_to_start"
 "Shift+;"     = "enter_command_line"
