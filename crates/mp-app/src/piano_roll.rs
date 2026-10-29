@@ -201,7 +201,7 @@ impl RollView {
         let full = ui.available_rect_before_wrap();
         let painter = ui.painter_at(full);
         painter.rect_filled(full, 0.0, theme.color("background"));
-        let font = FontId::monospace((theme.font_size - 2.0).max(8.0));
+        let font = theme.font((theme.font_size - 2.0).max(8.0));
         let rect = match editor.lane {
             Some(_) if full.height() > LANE_STRIP_H * 2.0 => {
                 Rect::from_min_max(full.min, Pos2::new(full.right(), full.bottom() - LANE_STRIP_H))
@@ -392,7 +392,7 @@ impl RollView {
     #[allow(clippy::too_many_arguments)]
     fn draw_lane_strip(&self, painter: &Painter, strip: Rect, area: Rect, editor: &Editor, kind: LaneKind, theme: &Theme, font: &FontId) {
         painter.rect_filled(strip, 0.0, theme.color("status_bg"));
-        painter.hline(strip.x_range(), strip.top() + 0.5, Stroke::new(1.0, theme.color("bar_line")));
+        painter.hline(strip.x_range(), strip.top() + 0.5, Stroke::new(1.0, theme.color("panel_border")));
         let Some(track) = editor.track() else { return };
         let (lo, hi) = kind.range();
         let plot = Rect::from_min_max(Pos2::new(area.left(), strip.top() + 6.0), Pos2::new(strip.right(), strip.bottom() - 4.0));
@@ -403,7 +403,7 @@ impl RollView {
         let points = track.lanes.get(kind);
         let left = self.left_tick as u64;
         let right = self.tick_at_right(area) as u64;
-        let color = theme.color("accent");
+        let color = theme.track_color(editor.track_index);
         let mut prev: Option<(f32, f32)> = points
             .iter()
             .rev()
@@ -434,7 +434,7 @@ impl RollView {
             Pos2::new(strip.left() + 6.0, strip.top() + 4.0),
             Align2::LEFT_TOP,
             format!("{kind}\n{value}"),
-            font.clone(),
+            theme.font(font.size),
             theme.color("status_fg"),
         );
     }
@@ -498,12 +498,17 @@ impl RollView {
             }
             let r = self.note_rect(area, note.start.get(), note.end().get(), note.pitch);
             let selected = editor.selection.contains(&note.id);
-            let base = theme.color(if selected { "note_selected" } else { "note" });
-            let alpha = 110 + (note.velocity as u32 * 145 / 127) as u8;
+            let track_color = theme.track_color(editor.track_index);
+            // A selected note is the same note lit up: its track color pushed toward white.
+            let base = if selected { track_color.lerp_to_gamma(Color32::WHITE, 0.55) } else { track_color };
+            // Selected notes ignore velocity shading so the lift in brightness is unmistakable.
+            let alpha = if selected { 255 } else { 110 + (note.velocity as u32 * 145 / 127) as u8 };
             let fill = Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), alpha);
             painter.rect_filled(r, 2.0, fill);
             let outline = if under_cursor == Some(note.id) || editor.focus == Some(note.id) {
                 Stroke::new(1.5, theme.color("cursor"))
+            } else if selected {
+                Stroke::new(1.5, theme.color("note_selected"))
             } else {
                 Stroke::new(1.0, base.gamma_multiply(0.6))
             };
@@ -553,13 +558,13 @@ impl RollView {
                         Pos2::new(column.right() - 4.0, y + self.row_h / 2.0),
                         Align2::RIGHT_CENTER,
                         label,
-                        font.clone(),
+                        theme.bold(font.size),
                         theme.color("key_label"),
                     );
                 }
             }
         }
-        painter.vline(area.left() - 0.5, column.y_range(), Stroke::new(1.0, theme.color("bar_line")));
+        painter.vline(area.left() - 0.5, column.y_range(), Stroke::new(1.0, theme.color("panel_border")));
     }
 
     fn draw_key_column(&self, painter: &Painter, rect: Rect, area: Rect, theme: &Theme, font: &FontId) {
@@ -591,12 +596,12 @@ impl RollView {
                     Pos2::new(column.right() - 4.0, y + self.row_h / 2.0),
                     Align2::RIGHT_CENTER,
                     pitch_name(pitch as u8),
-                    font.clone(),
+                    theme.bold(font.size),
                     theme.color("key_label"),
                 );
             }
         }
-        painter.vline(area.left() - 0.5, column.y_range(), Stroke::new(1.0, theme.color("bar_line")));
+        painter.vline(area.left() - 0.5, column.y_range(), Stroke::new(1.0, theme.color("panel_border")));
     }
 
     fn draw_ruler(&self, painter: &Painter, rect: Rect, area: Rect, editor: &Editor, theme: &Theme, font: &FontId) {
@@ -625,7 +630,7 @@ impl RollView {
                 break;
             }
         }
-        painter.hline(ruler.x_range(), area.top() - 0.5, Stroke::new(1.0, theme.color("bar_line")));
+        painter.hline(ruler.x_range(), area.top() - 0.5, Stroke::new(1.0, theme.color("panel_border")));
     }
 }
 

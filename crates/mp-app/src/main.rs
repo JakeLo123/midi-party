@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use clap::Parser;
-use egui::{FontId, Rect, RichText};
+use egui::{Rect, RichText, Stroke};
 use mp_audio::render::{render_song, write_audio_file, RenderOptions};
 use mp_audio::{render_song_from, SoundFontSynth, Synth};
 use mp_core::{
@@ -55,7 +55,8 @@ struct Args {
     #[arg(long, default_value = "assets/soundfonts/fluidr3-standard-kit.sf2")]
     drums_sf2: PathBuf,
     /// Config directory holding keymap.toml and theme.toml
-    /// (default: ~/.config/midi-party; both files are created on first run).
+    /// (default: the OS config folder, e.g. ~/Library/Application Support/midi-party on macOS;
+    /// both files are created on first run).
     #[arg(long)]
     config_dir: Option<PathBuf>,
     /// Close by itself after this many seconds (headless smoke test).
@@ -94,6 +95,34 @@ fn default_config_dir() -> PathBuf {
     dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")).join("midi-party")
 }
 
+/// Inside a macOS `.app`, the bundled assets live next to the binary in `Contents/Resources`.
+fn resource_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?.parent()?.join("Resources");
+    dir.is_dir().then_some(dir)
+}
+
+/// A relative asset path that does not exist from the current directory is
+/// looked up in the app bundle's resources instead.
+fn resolve_asset(path: PathBuf) -> PathBuf {
+    if path.is_relative() && !path.exists() {
+        if let Some(bundled) = resource_dir().map(|dir| dir.join(&path)).filter(|p| p.exists()) {
+            return bundled;
+        }
+    }
+    path
+}
+
+fn app_icon() -> egui::IconData {
+    let decoder = png::Decoder::new(&include_bytes!("../../../assets/icon/icon-256.png")[..]);
+    let mut reader = decoder.read_info().expect("bundled icon is a valid PNG");
+    let mut rgba = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut rgba).expect("bundled icon decodes");
+    assert_eq!(info.color_type, png::ColorType::Rgba, "bundled icon must be RGBA");
+    rgba.truncate(info.buffer_size());
+    egui::IconData { rgba, width: info.width, height: info.height }
+}
+
 /// First-run `keymap.toml`: an overlay, so updates to the built-in defaults keep reaching the user.
 const KEYMAP_TEMPLATE: &str = r#"# midi-party key bindings.
 #
@@ -121,13 +150,15 @@ const THEME_TEMPLATE: &str = r##"# midi-party theme.
 # Names: background, black_key_row, white_key, black_key, key_label, grid,
 # beat_line, bar_line, octave_line, note, note_selected, note_ghost, cursor,
 # cursor_fill, playhead, lane, lane_current, roll_window, status_bg, status_fg,
-# status_mode, status_dim, accent, error.
+# status_mode, status_dim, accent, error, panel_border, wordmark.
+# themes/party.toml in the source tree is a complete alternative palette.
 #
 # font_size = 14.0
+# track_colors = ["#e6a254", "#7cc5a8", "#d98ac4"]   # note colors by track number
 #
 # [colors]
-# note          = "#5aa0d8"
 # note_selected = "#f5c542"
+# playhead      = "#e05a5a"
 "##;
 
 /// Creates the config files if they don't exist yet. A `theme.toml` that is
@@ -284,11 +315,13 @@ struct App {
 impl App {
     fn new(cc: &eframe::CreationContext<'_>, args: Args) -> Self {
         cc.egui_ctx.set_theme(egui::Theme::Dark);
+        cc.egui_ctx.set_fonts(Theme::font_definitions());
         // egui otherwise takes Cmd+0 / Cmd+- / Cmd+= as UI-scale shortcuts before the keymap sees them.
         cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
         let config_dir = args.config_dir.unwrap_or_else(default_config_dir);
         ensure_config_files(&config_dir);
         let (theme, theme_error) = Theme::load(&config_dir.join("theme.toml"));
+        cc.egui_ctx.set_visuals(theme.visuals());
         let (mut keymap, keymap_error) = load_keymap(&config_dir.join("keymap.toml"));
         let config = ConfigWatcher::new(&config_dir, cc.egui_ctx.clone());
 
@@ -317,7 +350,7 @@ impl App {
                 Err(e) => keys_error = Some(format!("--keys: {e}")),
             }
         }
-        let mut audio = Audio::open(&args.sf2, &args.drums_sf2).map_err(|e| e.to_string());
+        let mut audio = Audio::open(&resolve_asset(args.sf2), &resolve_asset(args.drums_sf2)).map_err(|e| e.to_string());
         let mut status = match &audio {
             Ok(a) => format!("audio ready at {} Hz", a.sample_rate),
             Err(e) => format!("audio unavailable: {e}"),
@@ -470,11 +503,28 @@ impl App {
         match text {
             "Escape" if self.show_cheat_sheet => self.show_cheat_sheet = false,
             "Cmd+s" => self.run_command("w"),
-            "Cmd+k" => self.keymap_editor.open(&self.keymap),
+            "Cmd+k" => self.open_keymap_editor(),
             "Cmd+q" => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             _ => return false,
         }
         true
+    }
+
+    /// Only one overlay is up at a time, so keys always go to the one on screen.
+    fn close_overlays(&mut self) {
+        self.show_cheat_sheet = false;
+        self.keymap_editor.open = false;
+        self.picker.open = false;
+    }
+
+    fn open_keymap_editor(&mut self) {
+        self.close_overlays();
+        self.keymap_editor.open(&self.keymap);
+    }
+
+    fn show_cheat_sheet(&mut self) {
+        self.close_overlays();
+        self.show_cheat_sheet = true;
     }
 
     fn handle_chord(&mut self, chord: Chord, ctx: &egui::Context) {
@@ -543,7 +593,13 @@ impl App {
                 EditorEvent::OpenCommandLine => self.cmdline = Some(String::new()),
                 EditorEvent::Status(s) => self.status = s,
                 EditorEvent::Transport(request) => self.apply_transport(request),
-                EditorEvent::ToggleCheatSheet => self.show_cheat_sheet = !self.show_cheat_sheet,
+                EditorEvent::ToggleCheatSheet => {
+                    if self.show_cheat_sheet {
+                        self.show_cheat_sheet = false;
+                    } else {
+                        self.show_cheat_sheet();
+                    }
+                }
                 EditorEvent::OpenInstrumentPicker => self.open_picker(self.editor.track_index),
                 EditorEvent::View(ViewRequest::ZoomTime(factor)) => self.view.zoom_time(factor),
                 EditorEvent::View(ViewRequest::ZoomRows(factor)) => self.view.zoom_rows(factor),
@@ -556,10 +612,10 @@ impl App {
         }
     }
 
-    /// Runs an editor command (from the mouse or the command line) and applies its events.
     fn open_picker(&mut self, track: usize) {
         let Some(t) = self.editor.song.tracks.get(track).cloned() else { return };
         let lists = self.audio.as_mut().ok().map(|a| a.presets_for(&t));
+        self.close_overlays();
         self.picker.open(track, &t, lists);
     }
 
@@ -576,6 +632,7 @@ impl App {
         }
     }
 
+    /// Runs an editor command (from the mouse or the command line) and applies its events.
     fn execute(&mut self, cmd: &Command) {
         match self.editor.execute(cmd, None) {
             Ok(events) => self.apply_events(events),
@@ -905,8 +962,8 @@ impl App {
                     _ => self.status = "usage: :meter <n>/<d> [here]".into(),
                 }
             }
-            "help" => self.show_cheat_sheet = true,
-            "keys" | "keymap" => self.keymap_editor.open(&self.keymap),
+            "help" => self.show_cheat_sheet(),
+            "keys" | "keymap" => self.open_keymap_editor(),
             _ => match cmdline::parse(line) {
                 Ok(cmd) => match self.editor.execute(&cmd, None) {
                     Ok(events) => {
@@ -964,18 +1021,19 @@ impl App {
             .and_then(|p| p.file_name())
             .and_then(|n| n.to_str())
             .unwrap_or("untitled");
-        let title = format!("{name}{} — midi-party", if self.dirty { " •" } else { "" });
+        let title = format!("{name}{} — MIDI Party", if self.dirty { " •" } else { "" });
         if title != self.title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.title = title;
         }
     }
 
-    fn handle_config_events(&mut self) {
+    fn handle_config_events(&mut self, ctx: &egui::Context) {
         for event in self.config.poll() {
             match event {
                 ConfigEvent::ThemeChanged => {
                     let (theme, error) = Theme::load(&self.config_dir.join("theme.toml"));
+                    ctx.set_visuals(theme.visuals());
                     self.theme = theme;
                     self.status = error.unwrap_or_else(|| "theme reloaded".into());
                 }
@@ -988,43 +1046,75 @@ impl App {
         }
     }
 
+    /// One line of cells separated by thin rules: where the cursor is, then the
+    /// editing context, the transport on the right.
     fn draw_status_bar(&self, ui: &mut egui::Ui) {
-        let font = FontId::monospace(self.theme.font_size);
-        let text = |s: String, color: &str| RichText::new(s).font(font.clone()).color(self.theme.color(color));
+        let theme = &self.theme;
+        let mono = theme.font(theme.font_size);
+        let label_font = theme.font(theme.font_size - 3.0);
+        let separator = Stroke::new(1.0, theme.color("panel_border"));
+        let dim = theme.color("status_dim");
+        let text = |s: String, color: &str| RichText::new(s).font(mono.clone()).color(theme.color(color));
+        let cell = |ui: &mut egui::Ui, label: &str, value: RichText| {
+            ui.add_space(8.0);
+            if !label.is_empty() {
+                ui.label(RichText::new(label).font(label_font.clone()).color(dim));
+                ui.add_space(5.0);
+            }
+            ui.label(value);
+            ui.add_space(8.0);
+            ui.painter().vline(ui.cursor().left().round() + 0.5, ui.max_rect().y_range(), separator);
+        };
         let e = &self.editor;
         let song = &e.song;
+        ui.painter().hline(ui.max_rect().x_range(), ui.max_rect().top() - 4.5, separator);
+        ui.spacing_mut().item_spacing.x = 0.0;
         ui.horizontal(|ui| {
             if let Some(line) = &self.cmdline {
-                ui.label(text(" COMMAND ".into(), "status_mode").strong());
+                cell(ui, "", text("command".into(), "status_mode"));
+                ui.add_space(8.0);
                 ui.label(text(format!(":{line}▏"), "status_fg"));
                 return;
             }
             if e.box_anchor.is_some() {
-                ui.label(text(format!(" {} in box ", e.selection.len()), "status_mode").strong());
+                cell(ui, "", text(format!("{} in box", e.selection.len()), "status_mode"));
             }
             let mut pending: Vec<String> = e.count.map(|c| c.to_string()).into_iter().collect();
             pending.extend(self.keymap.pending().iter().map(|k| k.to_string()));
             if !pending.is_empty() {
-                ui.label(text(pending.join(" "), "accent"));
+                cell(ui, "", text(pending.join(" "), "accent"));
             }
-            ui.label(text(song.meter_map.bar_beat_of(song.ppq, e.cursor.tick).to_string(), "status_fg"));
-            ui.label(text(format!("{} ({})", pitch_name(e.cursor.pitch), e.cursor.pitch), "status_fg"));
-            ui.label(text(format!("grid {}", e.grid), "status_dim"));
+            cell(ui, "", text(song.meter_map.bar_beat_of(song.ppq, e.cursor.tick).to_string(), "status_fg"));
+            cell(ui, "", text(format!("{} {}", pitch_name(e.cursor.pitch), e.cursor.pitch), "status_fg"));
+            cell(ui, "grid", text(e.grid.to_string(), "status_fg"));
             let track_name = e.track().map(|t| t.name.as_str()).unwrap_or("-");
-            ui.label(text(format!("track {}/{} {}", e.track_index + 1, song.tracks.len(), track_name), "status_dim"));
-            ui.label(text(format!("{:.0} bpm", song.tempo_map.bpm_at(e.cursor.tick)), "status_dim"));
-            ui.label(text(format!("reverb {:>3}%", (song.master_reverb * 100.0).round() as i32), "status_dim"));
+            cell(ui, "track", text(format!("{}/{} {}", e.track_index + 1, song.tracks.len(), track_name), "status_fg"));
+            cell(ui, "", text(format!("{:.0} bpm", song.tempo_map.bpm_at(e.cursor.tick)), "status_fg"));
+            cell(ui, "reverb", text(format!("{}%", (song.master_reverb * 100.0).round() as i32), "status_fg"));
             if !e.selection.is_empty() {
-                ui.label(text(format!("{} selected", e.selection.len()), "note_selected"));
+                cell(ui, "", text(format!("{} selected", e.selection.len()), "note_selected"));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let transport = match &self.audio {
-                    Ok(a) if a.is_playing() => format!("▶ {:6.2}s", a.playhead_seconds()),
-                    Ok(_) => format!("■ {:6.2}s", self.tick_seconds(self.playhead)),
-                    Err(_) => "no audio".to_string(),
-                };
-                ui.label(text(transport, "status_fg"));
-                ui.add(egui::Label::new(text(self.status.clone(), "status_dim")).truncate());
+                ui.add_space(8.0);
+                match &self.audio {
+                    Ok(a) => {
+                        let (glyph, color, seconds) = if a.is_playing() {
+                            ("▶", "accent", a.playhead_seconds())
+                        } else {
+                            ("■", "status_dim", self.tick_seconds(self.playhead))
+                        };
+                        ui.label(text(format!("{}:{:05.2}", (seconds / 60.0) as u64, seconds % 60.0), "status_fg"));
+                        ui.add_space(5.0);
+                        ui.label(text(glyph.into(), color));
+                    }
+                    Err(_) => {
+                        ui.label(text("no audio".into(), "error"));
+                    }
+                }
+                ui.add_space(8.0);
+                ui.painter().vline(ui.cursor().right().round() + 0.5, ui.max_rect().y_range(), separator);
+                ui.add_space(8.0);
+                ui.add(egui::Label::new(RichText::new(self.status.clone()).font(theme.font(theme.font_size - 1.0)).color(dim)).truncate());
             });
         });
     }
@@ -1078,7 +1168,7 @@ impl eframe::App for App {
                 self.cmdline_text(&polled.text);
             }
         }
-        self.handle_config_events();
+        self.handle_config_events(&ctx);
         self.poll_export();
         self.autosave(now);
         self.update_title(&ctx);
@@ -1098,7 +1188,7 @@ impl eframe::App for App {
 
         let status_bg = self.theme.color("status_bg");
         egui::Panel::bottom("status")
-            .frame(egui::Frame::NONE.fill(status_bg).inner_margin(4.0))
+            .frame(egui::Frame::NONE.fill(status_bg).inner_margin(egui::Margin::symmetric(0, 5)))
             .show(ui, |ui| self.draw_status_bar(ui));
         let playhead = Some(self.playhead.get() as f64);
         let background = self.theme.color("background");
@@ -1146,7 +1236,7 @@ impl eframe::App for App {
             self.needs_scroll = false;
         }
         if self.show_cheat_sheet {
-            cheat_sheet::draw(&ctx, &self.keymap, &self.theme);
+            cheat_sheet::draw(&ctx, &self.keymap, &self.theme, &self.config_dir);
         }
         if self.keymap_editor.open {
             self.keymap_editor.draw(&ctx, &self.theme);
@@ -1161,7 +1251,8 @@ fn main() -> eframe::Result {
     let args = Args::parse();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("midi-party")
+            .with_title("MIDI Party")
+            .with_icon(app_icon())
             .with_inner_size([1200.0, 720.0])
             .with_min_inner_size([640.0, 360.0]),
         // Otherwise egui-winit turns Cmd+c/x/v into clipboard events and the keymap never sees them.

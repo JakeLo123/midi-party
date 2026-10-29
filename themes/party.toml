@@ -1,0 +1,33 @@
+# midi-party preset: playful party. Deep violet, magenta notes, cyan accents.
+# Copy to theme.toml in the config folder to use it
+# (macOS: ~/Library/Application Support/midi-party, Linux: ~/.config/midi-party).
+
+track_colors = ["#ff4fa3", "#3ae8e0", "#ffe34d", "#9d6bff", "#ff8a5c", "#5cff9d", "#ff6bd6", "#6ba8ff"]
+
+[colors]
+background     = "#17132a"
+black_key_row  = "#100d1f"
+white_key      = "#f2eeff"
+black_key      = "#15112a"
+key_label      = "#433a66"
+grid           = "#241f3a"
+beat_line      = "#2d2747"
+bar_line       = "#5a4a8c"
+octave_line    = "#3d3463"
+note           = "#ff4fa3"
+note_selected  = "#3ae8e0"
+note_ghost     = "#4a3a63"
+cursor         = "#ffffff"
+cursor_fill    = "#ffffff30"
+playhead       = "#ffe34d"
+lane           = "#0f0c1d"
+lane_current   = "#1f1838"
+roll_window    = "#3ae8e018"
+status_bg      = "#0b0915"
+status_fg      = "#efeaff"
+status_mode    = "#3ae8e0"
+status_dim     = "#7f73a8"
+accent         = "#3ae8e0"
+error          = "#ff4fa3"
+panel_border   = "#2a2344"
+wordmark       = "#241d3d"

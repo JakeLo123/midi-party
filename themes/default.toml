@@ -1,31 +1,39 @@
-# midi-party default theme: dark, flat, terminal-ish.
-# Copy to ~/.config/midi-party/theme.toml and override any entry.
+# midi-party default theme: warm dark studio.
+# Copy to theme.toml in the config folder (macOS: ~/Library/Application Support/midi-party,
+# Linux: ~/.config/midi-party) and override any entry, or copy themes/party.toml there
+# for the louder preset.
 # Colors are "#rrggbb" or "#rrggbbaa".
 
 font_size = 14.0
 
+# Note colors by track number, cycling when there are more tracks than colors.
+# An empty list falls back to `note` for every track.
+track_colors = ["#e6a254", "#7cc5a8", "#d98ac4", "#8fb4e3", "#c9c26b", "#e08b6c", "#9fd0d8", "#b49be0"]
+
 [colors]
-background     = "#1b1b1b"   # rows of the white keys
-black_key_row  = "#111111"   # rows of the sharps/flats, darker like the keys
-white_key      = "#d6d6d6"   # the keyboard on the left
-black_key      = "#161616"
-key_label      = "#303030"
-grid           = "#262626"   # grid step lines
-beat_line      = "#333333"
-bar_line       = "#4a4a4a"
-octave_line    = "#3a3a3a"
-note           = "#5aa0d8"
-note_selected  = "#f5c542"
-note_ghost     = "#3a4a5a"
-cursor         = "#ffffff"
-cursor_fill    = "#ffffff30"
-playhead       = "#e05a5a"
-lane           = "#161616"   # track lanes in the tracks area
-lane_current   = "#1f2428"   # lane of the track being edited
-roll_window    = "#5aa0d81c" # the stretch of the song the piano roll is showing
-status_bg      = "#0c0c0c"
-status_fg      = "#d0d0d0"
-status_mode    = "#8ad88a"
-status_dim     = "#707070"
-accent         = "#8ad88a"
-error          = "#e05a5a"
+background     = "#1b1917"   # rows of the white keys
+black_key_row  = "#141210"   # rows of the sharps/flats, darker like the keys
+white_key      = "#ece5d8"   # the keyboard on the left
+black_key      = "#1a1816"
+key_label      = "#3f3831"
+grid           = "#272320"   # grid step lines
+beat_line      = "#312c27"
+bar_line       = "#4a4238"
+octave_line    = "#3a342d"
+note           = "#e6a254"   # used when track_colors is empty
+note_selected  = "#f6f1e7"
+note_ghost     = "#4a4036"
+cursor         = "#f6f1e7"
+cursor_fill    = "#f6f1e730"
+playhead       = "#ff6a4d"
+lane           = "#121110"   # track lanes in the tracks area
+lane_current   = "#242019"   # lane of the track being edited
+roll_window    = "#e6a25418" # the stretch of the song the piano roll is showing
+status_bg      = "#100f0d"
+status_fg      = "#dcd5ca"
+status_mode    = "#e6a254"
+status_dim     = "#7f776d"
+accent         = "#e6a254"
+error          = "#ff6a4d"
+panel_border   = "#2e2924"   # separators between panels and status cells
+wordmark       = "#2a2622"   # the dim "MIDI Party" in an empty tracks area

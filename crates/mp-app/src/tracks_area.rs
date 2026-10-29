@@ -207,7 +207,7 @@ struct HeaderHot {
 /// A one-letter mute or solo badge: filled with `on_color` when on, an outline when off.
 #[allow(clippy::too_many_arguments)]
 fn draw_badge(painter: &Painter, rect: Rect, letter: &str, on: bool, hot: bool, on_color: Color32, theme: &Theme, font: &FontId) {
-    let rounding = CornerRadius::same(3);
+    let rounding = CornerRadius::same(2);
     if on {
         painter.rect_filled(rect, rounding, on_color);
         painter.text(rect.center(), Align2::CENTER_CENTER, letter, font.clone(), theme.color("status_bg"));
@@ -219,19 +219,20 @@ fn draw_badge(painter: &Painter, rect: Rect, letter: &str, on: bool, hot: bool, 
 }
 
 /// A horizontal fader: 0% at the left end, 200% at the right, a tick at 100%.
-fn draw_volume_slider(painter: &Painter, rect: Rect, percent: i32, hot: bool, theme: &Theme) {
+fn draw_volume_slider(painter: &Painter, rect: Rect, percent: i32, hot: bool, color: Color32, theme: &Theme) {
     let track = Rect::from_center_size(rect.center(), Vec2::new(rect.width(), 4.0));
     let t = (percent as f32 / MAX_TRACK_VOLUME_PERCENT as f32).clamp(0.0, 1.0);
     let x = track.left() + t * track.width();
+    let fill = if hot { theme.color("status_fg") } else { color };
     painter.rect_filled(track, CornerRadius::same(2), theme.color("bar_line"));
-    painter.rect_filled(Rect::from_min_max(track.min, Pos2::new(x, track.bottom())), CornerRadius::same(2), theme.color(if hot { "status_fg" } else { "note" }));
+    painter.rect_filled(Rect::from_min_max(track.min, Pos2::new(x, track.bottom())), CornerRadius::same(2), fill);
     let unity_x = track.left() + track.width() / 2.0;
     painter.vline(unity_x, Rangef::new(rect.top() + 1.0, rect.bottom() - 1.0), Stroke::new(1.0, theme.color("status_dim")));
-    painter.circle_filled(Pos2::new(x, rect.center().y), 5.0, theme.color(if hot { "status_fg" } else { "note" }));
+    painter.circle_filled(Pos2::new(x, rect.center().y), 5.0, fill);
 }
 
 /// A rotary pan knob: pointer straight up at centre, turned left or right for L/R.
-fn draw_pan_knob(painter: &Painter, rect: Rect, pan: i32, hot: bool, theme: &Theme) {
+fn draw_pan_knob(painter: &Painter, rect: Rect, pan: i32, hot: bool, color: Color32, theme: &Theme) {
     let centre = rect.center();
     let radius = rect.width() / 2.0;
     painter.circle(centre, radius, theme.color("status_bg"), Stroke::new(1.0, theme.color(if hot { "status_fg" } else { "bar_line" })));
@@ -246,10 +247,10 @@ fn draw_pan_knob(painter: &Painter, rect: Rect, pan: i32, hot: bool, theme: &The
         })
         .collect();
     if pan != 0 {
-        painter.add(egui::Shape::line(arc, Stroke::new(2.0, theme.color("note"))));
+        painter.add(egui::Shape::line(arc, Stroke::new(2.0, color)));
     }
     let tip = centre + Vec2::new(angle.sin(), -angle.cos()) * (radius - 1.5);
-    painter.line_segment([centre, tip], Stroke::new(2.0, theme.color(if hot { "status_fg" } else { "note" })));
+    painter.line_segment([centre, tip], Stroke::new(2.0, if hot { theme.color("status_fg") } else { color }));
 }
 
 impl TracksArea {
@@ -339,7 +340,7 @@ impl TracksArea {
             }
         }
 
-        let font = FontId::monospace((theme.font_size - 3.0).max(8.0));
+        let font = theme.font((theme.font_size - 3.0).max(8.0));
         let ruler = Rect::from_min_max(Pos2::new(lanes_x.min, rect.top()), Pos2::new(rect.right(), rect.top() + RULER_H));
         self.draw_ruler(ui.painter(), ruler, lanes_x, song, theme, &font);
         let ruler_response = ui.interact(ruler, ui.scope_id().with("tracks_ruler"), Sense::click_and_drag());
@@ -366,7 +367,7 @@ impl TracksArea {
         let mut rows_top = rows_rect.top();
         let mut rows_bottom = rows_rect.top();
         let any_solo = song.tracks.iter().any(|t| t.solo);
-        let header_font = FontId::monospace(theme.font_size - 1.0);
+        let header_font = theme.font(theme.font_size - 1.0);
         let mut rows_ui = ui.new_child(egui::UiBuilder::new().max_rect(rows_rect));
         egui::ScrollArea::vertical().id_salt("tracks_rows").auto_shrink([false, false]).show(&mut rows_ui, |ui| {
             for (i, track) in song.tracks.iter().enumerate() {
@@ -424,8 +425,8 @@ impl TracksArea {
                     knob: knob_response.hovered() || knob_response.dragged(),
                 };
                 self.draw_header(painter, header, &controls, i, track, instrument, current, muted, hot, theme, &header_font);
-                self.draw_lane(painter, lane, track, current, muted, song, theme);
-                painter.hline(row.x_range(), row.bottom() - 0.5, Stroke::new(1.0, theme.color("grid")));
+                self.draw_lane(painter, lane, i, track, current, muted, song, theme);
+                painter.hline(row.x_range(), row.bottom() - 0.5, Stroke::new(1.0, theme.color("panel_border")));
                 if response.clicked() {
                     if let Some(pos) = response.interact_pointer_pos() {
                         if pos.x < lane.left() {
@@ -445,6 +446,11 @@ impl TracksArea {
             }
         });
         self.shown_track = Some(editor.track_index);
+
+        let free = Rect::from_min_max(Pos2::new(rect.left(), rows_bottom.max(rows_rect.top())), rows_rect.max);
+        if free.height() >= 60.0 && song.tracks.iter().all(|t| t.notes.is_empty()) {
+            ui.painter().text(free.center(), Align2::CENTER_CENTER, "MIDI Party", theme.bold(theme.font_size * 2.5), theme.color("wordmark"));
+        }
 
         let lanes_clip = Rect::from_min_max(Pos2::new(lanes_x.min, rect.top()), rect.max);
         let overlay = ui.painter().with_clip_rect(lanes_clip.intersect(rows_rect.union(ruler)));
@@ -506,7 +512,7 @@ impl TracksArea {
                 break;
             }
         }
-        painter.hline(ruler.x_range(), ruler.bottom() - 0.5, Stroke::new(1.0, theme.color("bar_line")));
+        painter.hline(ruler.x_range(), ruler.bottom() - 0.5, Stroke::new(1.0, theme.color("panel_border")));
     }
 
     /// Two lines: `N Name` with the mute and solo badges on the right, then the
@@ -519,20 +525,26 @@ impl TracksArea {
             painter.rect_filled(header, 0.0, theme.color("black_key_row"));
         }
         let dim = theme.color("status_dim");
+        let color = theme.track_color(index);
         let volume_percent = (track.volume * 100.0).round() as i32;
         let pan_value = (track.pan * 100.0).round() as i32;
 
-        draw_badge(&painter, controls.mute, "M", track.mute, hot.mute, theme.color("error"), theme, font);
-        draw_badge(&painter, controls.solo, "S", track.solo, hot.solo, theme.color("note_selected"), theme, font);
-        draw_volume_slider(&painter, controls.slider, volume_percent, hot.slider, theme);
-        draw_pan_knob(&painter, controls.knob, pan_value, hot.knob, theme);
+        let badge_font = theme.font(font.size - 2.0);
+        draw_badge(&painter, controls.mute, "M", track.mute, hot.mute, theme.color("error"), theme, &badge_font);
+        draw_badge(&painter, controls.solo, "S", track.solo, hot.solo, theme.color("note_selected"), theme, &badge_font);
+        draw_volume_slider(&painter, controls.slider, volume_percent, hot.slider, color, theme);
+        draw_pan_knob(&painter, controls.knob, pan_value, hot.knob, color, theme);
 
-        let name_color = if current { "note_selected" } else if muted { "status_dim" } else { "status_fg" };
+        let name_color = if muted { dim } else { theme.color("status_fg") };
+        let name_font = if current { theme.bold(font.size) } else { font.clone() };
         let x = header.left() + HEADER_PAD;
-        let name = format!("{:>2} {}", index + 1, track.name);
-        draw_truncated(&painter, Pos2::new(x, controls.line1_y), &name, controls.mute.left() - HEADER_PAD - x, font, theme.color(name_color));
-        let indent = 3.0 * font.size * 0.6;
-        draw_truncated(&painter, Pos2::new(x + indent, controls.line2_y), instrument, controls.slider.left() - HEADER_PAD - x - indent, font, dim);
+        let swatch = Rect::from_center_size(Pos2::new(x + 4.0, controls.line1_y), Vec2::splat(8.0));
+        painter.rect_filled(swatch, CornerRadius::same(1), if muted { theme.color("note_ghost") } else { color });
+        let indent = 14.0;
+        let name = format!("{} {}", index + 1, track.name);
+        draw_truncated(&painter, Pos2::new(x + indent, controls.line1_y), &name, controls.mute.left() - HEADER_PAD - x - indent, &name_font, name_color);
+        let instrument_font = theme.font(font.size - 1.0);
+        draw_truncated(&painter, Pos2::new(x + indent, controls.line2_y), instrument, controls.slider.left() - HEADER_PAD - x - indent, &instrument_font, dim);
 
         // The value of the control under the pointer, over the first line so it never hides the control itself.
         let value_label = if hot.slider {
@@ -545,13 +557,13 @@ impl TracksArea {
         if let Some((x, text)) = value_label {
             let x = x.min(controls.mute.left() - HEADER_PAD - 20.0);
             let rect = painter.text(Pos2::new(x, controls.line1_y), Align2::CENTER_CENTER, text.clone(), font.clone(), theme.color("status_fg"));
-            painter.rect_filled(rect.expand(3.0), CornerRadius::same(3), theme.color("status_bg"));
+            painter.rect_filled(rect.expand(3.0), CornerRadius::same(2), theme.color("status_bg"));
             painter.text(Pos2::new(x, controls.line1_y), Align2::CENTER_CENTER, text, font.clone(), theme.color("status_fg"));
         }
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn draw_lane(&self, painter: &Painter, lane: Rect, track: &mp_core::Track, current: bool, muted: bool, song: &Song, theme: &Theme) {
+    fn draw_lane(&self, painter: &Painter, lane: Rect, index: usize, track: &mp_core::Track, current: bool, muted: bool, song: &Song, theme: &Theme) {
         let painter = painter.with_clip_rect(lane);
         painter.rect_filled(lane, 0.0, theme.color(if current { "lane_current" } else { "lane" }));
         let right = self.tick_at_right(lane.x_range());
@@ -571,7 +583,7 @@ impl TracksArea {
         let inner = lane.shrink2(Vec2::new(0.0, 2.0));
         let left = self.left_tick as u64;
         let right = right as u64;
-        let base = theme.color(if muted { "note_ghost" } else { "note" });
+        let base = if muted { theme.color("note_ghost") } else { theme.track_color(index) };
         for note in &track.notes {
             if note.end().get() < left || note.start.get() > right {
                 continue;

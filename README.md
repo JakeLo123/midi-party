@@ -18,12 +18,26 @@ track with `:sf2 path/to/bank.sf2 <preset>`.
 
 ## Configuration
 
-On first run the app writes `~/.config/midi-party/keymap.toml` and `theme.toml`.
+On first run the app writes `keymap.toml` and `theme.toml` to its config folder:
+`~/Library/Application Support/midi-party` on macOS, `~/.config/midi-party` on Linux.
 Both are *overlays* on the built-in defaults: anything in them overrides, the
 rest keeps tracking updates. `preset = "vim"` at the top of `keymap.toml`
 switches cursor movement to `h j k l`. Set a key to `"unbind"` to remove it.
 Both files reload the moment you save them. `Cmd+e` hides and shows the piano
 roll under the tracks area, and `Cmd+0` fits the whole song in the tracks area again.
+
+The built-in look is the warm dark palette in `themes/default.toml`; copy
+`themes/party.toml` over your `theme.toml` for the louder one. `track_colors`
+lists the note colors by track number.
+
+## macOS app
+
+```bash
+scripts/bundle-macos.sh
+```
+
+builds a release binary and wraps it as `target/bundle/MIDI Party.app` with the
+icon and the bundled SoundFonts.
 
 ## Headless tools
 
@@ -54,4 +68,5 @@ new files.
 MP3 export links LAME statically via `mp3lame-encoder` (LGPL-3.0). The test
 SoundFont (`assets/soundfonts/florestan-subset.sf2`) is public domain and the
 drum kit (`fluidr3-standard-kit.sf2`) is MIT; see the `LICENSE.txt` beside
-them. Everything else is MIT/Apache/Unlicense.
+them. The bundled font (Anonymous Pro) is under the SIL Open Font
+License, see `assets/fonts/LICENSE.txt`. Everything else is MIT/Apache/Unlicense.
