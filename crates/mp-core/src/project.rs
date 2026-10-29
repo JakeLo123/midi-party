@@ -155,6 +155,19 @@ mod tests {
     }
 
     #[test]
+    fn header_width_round_trips_and_defaults_when_missing() {
+        let mut song = sample();
+        song.track_header_width = 300.0;
+        let text = to_ron_string(&song).unwrap();
+        assert!(text.contains("track_header_width: 300.0,"), "{text}");
+        assert_eq!(from_ron_str(&text).unwrap().track_header_width, 300.0);
+        let older = text.replacen("track_header_width: 300.0,", "", 1);
+        assert_eq!(from_ron_str(&older).unwrap().track_header_width, crate::song::DEFAULT_TRACK_HEADER_WIDTH);
+        let broken = text.replacen("track_header_width: 300.0,", "track_header_width: -5.0,", 1);
+        assert_eq!(from_ron_str(&broken).unwrap().track_header_width, crate::song::DEFAULT_TRACK_HEADER_WIDTH);
+    }
+
+    #[test]
     fn load_sorts_notes() {
         let mut song = sample();
         song.tracks[0].notes.reverse();

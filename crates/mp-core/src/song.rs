@@ -24,6 +24,13 @@ fn default_master_reverb() -> f32 {
     DEFAULT_MASTER_REVERB
 }
 
+/// Width in pixels of the track headers in the tracks area of a new song.
+pub const DEFAULT_TRACK_HEADER_WIDTH: f32 = 220.0;
+
+fn default_track_header_width() -> f32 {
+    DEFAULT_TRACK_HEADER_WIDTH
+}
+
 /// A position or duration in ticks. Never negative.
 ///
 /// Prefer [`Tick::saturating_sub`] when subtracting positions so cursor and note
@@ -477,6 +484,10 @@ pub struct Song {
     /// load with [`DEFAULT_MASTER_REVERB`].
     #[serde(default = "default_master_reverb")]
     pub master_reverb: f32,
+    /// Width in pixels of the track headers (name, instrument, mixer state) in the
+    /// tracks area. Part of the song so a project opens laid out the way it was saved.
+    #[serde(default = "default_track_header_width")]
+    pub track_header_width: f32,
 }
 
 impl Song {
@@ -490,6 +501,7 @@ impl Song {
             tracks: vec![Track::new("Track 1")],
             next_note_id: 1,
             master_reverb: DEFAULT_MASTER_REVERB,
+            track_header_width: DEFAULT_TRACK_HEADER_WIDTH,
         }
     }
 
@@ -564,11 +576,15 @@ impl Song {
         Some(copy)
     }
 
-    /// Sorts the notes and lanes of every track.
+    /// Sorts the notes and lanes of every track and replaces a nonsensical header
+    /// width (hand-edited, or NaN) with the default.
     pub fn normalize(&mut self) {
         for t in &mut self.tracks {
             t.sort_notes();
             t.lanes.sort();
+        }
+        if !(self.track_header_width.is_finite() && self.track_header_width > 0.0) {
+            self.track_header_width = DEFAULT_TRACK_HEADER_WIDTH;
         }
     }
 

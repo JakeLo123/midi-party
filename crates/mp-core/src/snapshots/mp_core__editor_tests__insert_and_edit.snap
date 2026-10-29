@@ -65,4 +65,5 @@ Song(
   ],
   next_note_id: 4,
   master_reverb: 0.25,
+  track_header_width: 220.0,
 )
