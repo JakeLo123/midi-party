@@ -68,7 +68,6 @@ const SPECS: &[Spec] = &[
     Spec { name: "quantize_length", args: "", aliases: &["ql"] },
     Spec { name: "set_swing", args: "<percent>", aliases: &["swing"] },
     Spec { name: "transpose_selected", args: "<semitones>", aliases: &["t", "tr", "transpose"] },
-    Spec { name: "repeat_last_edit", args: "", aliases: &["repeat"] },
     Spec { name: "undo", args: "", aliases: &["u"] },
     Spec { name: "redo", args: "", aliases: &[] },
     Spec { name: "toggle_select_under_cursor", args: "", aliases: &[] },
@@ -144,8 +143,11 @@ const SPECS: &[Spec] = &[
     Spec { name: "play", args: "", aliases: &[] },
     Spec { name: "stop", args: "", aliases: &[] },
     Spec { name: "toggle_play", args: "", aliases: &[] },
-    Spec { name: "play_from_cursor", args: "", aliases: &[] },
     Spec { name: "playhead_to_start", args: "", aliases: &[] },
+    Spec { name: "playhead_to_cursor", args: "", aliases: &[] },
+    Spec { name: "cursor_to_playhead", args: "", aliases: &[] },
+    Spec { name: "playhead_prev_bar", args: "", aliases: &[] },
+    Spec { name: "playhead_next_bar", args: "", aliases: &[] },
     Spec { name: "enter_command_line", args: "", aliases: &[] },
 ];
 
@@ -481,7 +483,6 @@ pub fn parse(line: &str) -> Result<Command, CmdLineError> {
             a.at_most(1)?;
             Command::TransposeSelected { semitones: a.number(0, "semitones", "expected a number of semitones")? }
         }
-        "repeat_last_edit" => Command::RepeatLastEdit,
         "undo" => Command::Undo,
         "redo" => Command::Redo,
         "toggle_select_under_cursor" => Command::ToggleSelectUnderCursor,
@@ -635,8 +636,11 @@ pub fn parse(line: &str) -> Result<Command, CmdLineError> {
         "play" => Command::Play,
         "stop" => Command::Stop,
         "toggle_play" => Command::TogglePlay,
-        "play_from_cursor" => Command::PlayFromCursor,
         "playhead_to_start" => Command::PlayheadToStart,
+        "playhead_to_cursor" => Command::PlayheadToCursor,
+        "cursor_to_playhead" => Command::CursorToPlayhead,
+        "playhead_prev_bar" => Command::PlayheadPrevBar,
+        "playhead_next_bar" => Command::PlayheadNextBar,
         "enter_command_line" => Command::EnterCommandLine,
         other => return Err(CmdLineError::UnknownCommand(other.to_string())),
     };
@@ -700,7 +704,6 @@ pub fn to_line(cmd: &Command) -> String {
         | Command::DeleteSelected
         | Command::Legato
         | Command::QuantizeLength
-        | Command::RepeatLastEdit
         | Command::Undo
         | Command::Redo
         | Command::ToggleSelectUnderCursor
@@ -756,8 +759,11 @@ pub fn to_line(cmd: &Command) -> String {
         | Command::Play
         | Command::Stop
         | Command::TogglePlay
-        | Command::PlayFromCursor
         | Command::PlayheadToStart
+        | Command::PlayheadToCursor
+        | Command::CursorToPlayhead
+        | Command::PlayheadPrevBar
+        | Command::PlayheadNextBar
         | Command::EnterCommandLine => Vec::new(),
     };
     if args.is_empty() {

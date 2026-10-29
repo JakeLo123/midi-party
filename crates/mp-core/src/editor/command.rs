@@ -219,9 +219,6 @@ pub enum Command {
     /// Transpose the selected notes by `semitones`, clamped as a group to 0..=127.
     /// Needs notes. Count: multiplier.
     TransposeSelected { semitones: i32 },
-    /// Run the last song-changing command again at the current cursor/selection, with
-    /// the count it had. Count: overrides that count. Not itself remembered.
-    RepeatLastEdit,
     /// Undo the last edit (restores cursor and selection too). Count: repeat.
     Undo,
     /// Redo the last undone edit. Count: repeat.
@@ -457,10 +454,17 @@ pub enum Command {
     Stop,
     /// Ask the app to stop if playing, else play from the playhead. Count: ignored.
     TogglePlay,
-    /// Ask the app to move the playhead to the cursor and play. Count: ignored.
-    PlayFromCursor,
     /// Ask the app to move the playhead to the start of the song. Count: ignored.
     PlayheadToStart,
+    /// Ask the app to move the playhead to the cursor. Count: ignored.
+    PlayheadToCursor,
+    /// Ask the app to move the cursor to the grid line at or before the playhead,
+    /// keeping its pitch. Count: ignored.
+    CursorToPlayhead,
+    /// Ask the app to move the playhead back to the previous bar line. Count: repeat.
+    PlayheadPrevBar,
+    /// Ask the app to move the playhead forward to the next bar line. Count: repeat.
+    PlayheadNextBar,
 
     // ------------------------------------------------------------------ mode
     /// Enter Command-line mode (the app then owns the text field). Count: ignored.
@@ -490,7 +494,6 @@ impl Command {
             Command::QuantizeLength => "quantize_length",
             Command::SetSwing { .. } => "set_swing",
             Command::TransposeSelected { .. } => "transpose_selected",
-            Command::RepeatLastEdit => "repeat_last_edit",
             Command::Undo => "undo",
             Command::Redo => "redo",
             Command::ToggleSelectUnderCursor => "toggle_select_under_cursor",
@@ -566,8 +569,11 @@ impl Command {
             Command::Play => "play",
             Command::Stop => "stop",
             Command::TogglePlay => "toggle_play",
-            Command::PlayFromCursor => "play_from_cursor",
             Command::PlayheadToStart => "playhead_to_start",
+            Command::PlayheadToCursor => "playhead_to_cursor",
+            Command::CursorToPlayhead => "cursor_to_playhead",
+            Command::PlayheadPrevBar => "playhead_prev_bar",
+            Command::PlayheadNextBar => "playhead_next_bar",
             Command::EnterCommandLine => "enter_command_line",
         }
     }
@@ -617,7 +623,6 @@ impl Command {
             Command::QuantizeLength => "Round note lengths to the grid".to_string(),
             Command::SetSwing { percent } => format!("Set swing to {percent}%"),
             Command::TransposeSelected { semitones } => format!("Transpose {semitones:+} semitone(s)"),
-            Command::RepeatLastEdit => "Repeat the last edit".to_string(),
             Command::Undo => "Undo".to_string(),
             Command::Redo => "Redo".to_string(),
             Command::ToggleSelectUnderCursor => "Toggle selection of the note under the cursor".to_string(),
@@ -709,9 +714,12 @@ impl Command {
             Command::PedalSelection => "Hold the sustain pedal under the selection".to_string(),
             Command::Play => "Play from the start".to_string(),
             Command::Stop => "Stop".to_string(),
-            Command::TogglePlay => "Play from the playhead / stop".to_string(),
-            Command::PlayFromCursor => "Play from the cursor".to_string(),
+            Command::TogglePlay => "Play / stop".to_string(),
             Command::PlayheadToStart => "Move the playhead to the start".to_string(),
+            Command::PlayheadToCursor => "Move the playhead to the cursor".to_string(),
+            Command::CursorToPlayhead => "Move the cursor to the playhead".to_string(),
+            Command::PlayheadPrevBar => "Move the playhead back a bar".to_string(),
+            Command::PlayheadNextBar => "Move the playhead forward a bar".to_string(),
             Command::EnterCommandLine => "Open the command line".to_string(),
         }
     }
@@ -762,7 +770,6 @@ impl Command {
             | Command::Quantize { .. }
             | Command::QuantizeLength
             | Command::TransposeSelected { .. }
-            | Command::RepeatLastEdit
             | Command::Undo
             | Command::Redo => Category::Edit,
             Command::Copy | Command::Cut | Command::Paste | Command::Duplicate => Category::Clipboard,
@@ -783,8 +790,11 @@ impl Command {
             Command::Play
             | Command::Stop
             | Command::TogglePlay
-            | Command::PlayFromCursor
-            | Command::PlayheadToStart => Category::Transport,
+            | Command::PlayheadToStart
+            | Command::PlayheadToCursor
+            | Command::CursorToPlayhead
+            | Command::PlayheadPrevBar
+            | Command::PlayheadNextBar => Category::Transport,
             Command::AddTrack
             | Command::RemoveTrack
             | Command::DuplicateTrack
@@ -853,7 +863,6 @@ impl Command {
             Command::QuantizeLength,
             Command::SetSwing { percent: 0 },
             Command::TransposeSelected { semitones: 12 },
-            Command::RepeatLastEdit,
             Command::Undo,
             Command::Redo,
             Command::ToggleSelectUnderCursor,
@@ -929,8 +938,11 @@ impl Command {
             Command::Play,
             Command::Stop,
             Command::TogglePlay,
-            Command::PlayFromCursor,
             Command::PlayheadToStart,
+            Command::PlayheadToCursor,
+            Command::CursorToPlayhead,
+            Command::PlayheadPrevBar,
+            Command::PlayheadNextBar,
             Command::EnterCommandLine,
         ]
     }

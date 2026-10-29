@@ -74,8 +74,7 @@ impl Default for Cursor {
     }
 }
 
-/// What a transport command asks the app to do. The app owns the playhead; a request
-/// that names a tick picked it from the cursor or the song start.
+/// What a transport command asks the app to do. The app owns the playhead.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransportRequest {
     /// Move the playhead to `from` and start playing.
@@ -86,6 +85,10 @@ pub enum TransportRequest {
     Toggle,
     /// Move the playhead to `to` without changing whether it is playing.
     Seek { to: Tick },
+    /// Move the cursor to the grid line at or before the playhead, keeping its pitch.
+    CursorToPlayhead,
+    /// Move the playhead `bars` bar lines forward (back, when negative) from where it is now.
+    StepBars { bars: i32 },
 }
 
 /// What a view command asks the app to do.
@@ -136,8 +139,6 @@ pub enum EditError {
     NothingToUndo,
     #[error("nothing to redo")]
     NothingToRedo,
-    #[error("nothing to repeat")]
-    NothingToRepeat,
     #[error("no focused note: press Tab to focus one")]
     NothingFocused,
     /// A select or keep command found no notes; the selection is left as it was.
@@ -188,13 +189,8 @@ pub struct Editor {
     /// The selected note Tab last stepped onto, drawn highlighted. Cleared whenever the
     /// selection changes by any other means.
     pub focus: Option<NoteId>,
-    /// The last command that changed the song, replayed by `repeat_last_edit`.
-    pub last_edit: Option<Command>,
-    /// The count `last_edit` ran with.
-    pub last_edit_count: Option<u32>,
     /// State of the generator behind `humanize`; advances on every call.
     pub rng_seed: u64,
-    committed: bool,
 }
 
 impl Editor {
@@ -213,10 +209,7 @@ impl Editor {
             undo: UndoStack::default(),
             box_anchor: None,
             focus: None,
-            last_edit: None,
-            last_edit_count: None,
             rng_seed: XorShift64::DEFAULT_SEED,
-            committed: false,
         }
     }
 
@@ -239,6 +232,12 @@ impl Editor {
     /// One grid step in ticks at the song's PPQ.
     pub fn grid_ticks(&self) -> Tick {
         self.grid.ticks(self.song.ppq)
+    }
+
+    /// Moves the cursor to the grid line at or before `tick`, keeping its pitch.
+    pub fn cursor_to_grid_line_at(&mut self, tick: Tick) {
+        let step = self.grid_ticks().get().max(1);
+        self.cursor.tick = Tick(tick.get() / step * step);
     }
 
     /// The note under the cursor on the current track.
@@ -276,11 +275,10 @@ impl Editor {
         self.song.meter_map.bar_beat_of(self.song.ppq, tick).to_string()
     }
 
-    /// Call before mutating the song: pushes the pre-edit snapshot (merging repeated
-    /// edits that share `coalesce_key`) and marks this command as an edit.
+    /// Call before mutating the song: pushes the pre-edit snapshot, merging repeated
+    /// edits that share `coalesce_key`.
     fn commit(&mut self, coalesce_key: Option<&str>) {
         self.undo.push(self.snapshot(), coalesce_key);
-        self.committed = true;
     }
 
     fn restore(&mut self, s: Snapshot) {
@@ -323,7 +321,6 @@ impl Editor {
     pub fn execute(&mut self, cmd: &Command, count: Option<u32>) -> Result<Vec<EditorEvent>, EditError> {
         let n = count.unwrap_or(1).max(1);
         let mut ev = Vec::new();
-        self.committed = false;
         if !cmd.is_edit() {
             // a cursor move, mode change etc. ends a run of coalesced nudges
             self.undo.break_coalescing();
@@ -358,12 +355,6 @@ impl Editor {
                 ev.push(EditorEvent::Status(format!("swing {}%", self.swing)));
             }
             Command::TransposeSelected { semitones } => self.transpose(*semitones, n, &mut ev)?,
-            Command::RepeatLastEdit => {
-                let last = self.last_edit.clone().ok_or(EditError::NothingToRepeat)?;
-                let count = count.or(self.last_edit_count);
-                // the inner call does all the bookkeeping, and `last_edit` stays `last`
-                return self.execute(&last, count);
-            }
             Command::Undo => self.undo_n(n, &mut ev)?,
             Command::Redo => self.redo_n(n, &mut ev)?,
 
@@ -586,20 +577,20 @@ impl Editor {
             Command::Play => ev.push(EditorEvent::Transport(TransportRequest::Play { from: Tick::ZERO })),
             Command::Stop => ev.push(EditorEvent::Transport(TransportRequest::Stop)),
             Command::TogglePlay => ev.push(EditorEvent::Transport(TransportRequest::Toggle)),
-            Command::PlayFromCursor => {
-                ev.push(EditorEvent::Transport(TransportRequest::Play { from: self.cursor.tick }));
-            }
             Command::PlayheadToStart => ev.push(EditorEvent::Transport(TransportRequest::Seek { to: Tick::ZERO })),
+            Command::PlayheadToCursor => ev.push(EditorEvent::Transport(TransportRequest::Seek { to: self.cursor.tick })),
+            Command::CursorToPlayhead => ev.push(EditorEvent::Transport(TransportRequest::CursorToPlayhead)),
+            Command::PlayheadPrevBar | Command::PlayheadNextBar => {
+                let n = i32::try_from(n).unwrap_or(i32::MAX);
+                let bars = if matches!(cmd, Command::PlayheadPrevBar) { -n } else { n };
+                ev.push(EditorEvent::Transport(TransportRequest::StepBars { bars }));
+            }
 
             // -------------------------------------------------------------- command line
             Command::EnterCommandLine => ev.push(EditorEvent::OpenCommandLine),
         }
         if !matches!(cmd, Command::ExtendSelection { .. }) {
             self.box_anchor = None;
-        }
-        if self.committed {
-            self.last_edit = Some(cmd.clone());
-            self.last_edit_count = count;
         }
         let keeps_focus = matches!(cmd, Command::SelectionFocusNext | Command::SelectionFocusPrev | Command::DropFocused);
         if !keeps_focus && self.selection != selection_before {
@@ -1154,7 +1145,6 @@ impl Editor {
         if done == 0 {
             return Err(EditError::NothingToUndo);
         }
-        self.committed = false;
         ev.push(EditorEvent::SongChanged);
         ev.push(EditorEvent::Status(format!("undo ({} left)", self.undo.undo_depth())));
         Ok(())
@@ -1702,7 +1692,6 @@ mod tests {
         assert_eq!(e.execute(&Command::Undo, None), Err(EditError::NothingToUndo));
         assert_eq!(e.execute(&Command::Redo, None), Err(EditError::NothingToRedo));
         assert_eq!(e.execute(&Command::ToggleSelectUnderCursor, None), Err(EditError::NoNoteUnderCursor));
-        assert_eq!(e.execute(&Command::RepeatLastEdit, None), Err(EditError::NothingToRepeat));
         assert_eq!(e.execute(&Command::DropFocused, None), Err(EditError::NothingFocused));
         assert_eq!(e.execute(&Command::SelectionFocusNext, None), Err(EditError::NothingSelected));
         assert_eq!(e.execute(&Command::KeepOnBeat, None), Err(EditError::NothingSelected));
@@ -1730,7 +1719,6 @@ mod tests {
         assert_eq!(e.cursor, before.cursor);
         assert_eq!(e.selection, before.selection);
         assert_eq!(e.undo, before.undo);
-        assert!(e.last_edit.is_none());
     }
 
     #[test]
@@ -1769,7 +1757,6 @@ mod tests {
         assert_eq!(EditError::NothingSelected.to_string(), "nothing selected and no note under the cursor");
         assert_eq!(EditError::OutOfRange("x".into()).to_string(), "x");
         assert_eq!(EditError::NoMatch("no notes in bar 2".into()).to_string(), "no notes in bar 2");
-        assert_eq!(EditError::NothingToRepeat.to_string(), "nothing to repeat");
         assert_eq!(EditError::LastTrack.to_string(), "cannot remove the last track");
         assert_eq!(EditError::NoLaneShown.to_string(), "no lane shown: cycle_lane or :lane sustain first");
         assert_eq!(EditError::BadValue("channel 17 is not 1-16".into()).to_string(), "channel 17 is not 1-16");

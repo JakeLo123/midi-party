@@ -292,6 +292,15 @@ impl MeterMap {
         }
         Tick::ZERO
     }
+
+    /// The bar line `bars` bar lines after `tick` (before it, when negative). Going
+    /// back from inside a bar counts that bar's own start first. Stops at bar 1.
+    pub fn step_bars(&self, ppq: u32, tick: Tick, bars: i32) -> Tick {
+        let bar = i64::from(self.bar_beat_of(ppq, tick).bar);
+        let inside = self.tick_of_bar(ppq, u32::try_from(bar).unwrap_or(u32::MAX)) < tick;
+        let target = if bars < 0 && inside { bar + i64::from(bars) + 1 } else { bar + i64::from(bars) };
+        self.tick_of_bar(ppq, u32::try_from(target.max(1)).unwrap_or(u32::MAX))
+    }
 }
 
 impl TryFrom<Vec<MeterPoint>> for MeterMap {
@@ -615,6 +624,20 @@ mod tests {
         assert_eq!(m.tick_of_bar(PPQ, 2), Tick(1920));
         assert_eq!(m.tick_of_bar(PPQ, 3), Tick(3840));
         assert!(matches!(m.set_meter_at(Tick(5), 4, 3), Err(TimeError::BadMeter(4, 3))));
+    }
+
+    #[test]
+    fn step_bars_lands_on_bar_lines() {
+        let mut m = MeterMap::constant(4, 4);
+        m.set_meter_at(Tick(3840), 3, 8).unwrap();
+        assert_eq!(m.step_bars(PPQ, Tick(0), 1), Tick(3840));
+        assert_eq!(m.step_bars(PPQ, Tick(100), 1), Tick(3840));
+        assert_eq!(m.step_bars(PPQ, Tick(3840), 2), Tick(3840 + 2 * 1440));
+        assert_eq!(m.step_bars(PPQ, Tick(3840 + 1440), -1), Tick(3840));
+        assert_eq!(m.step_bars(PPQ, Tick(3840 + 1440 + 10), -1), Tick(3840 + 1440), "inside a bar: its own start");
+        assert_eq!(m.step_bars(PPQ, Tick(3840 + 1440 + 10), -2), Tick(3840));
+        assert_eq!(m.step_bars(PPQ, Tick(3840), -5), Tick(0));
+        assert_eq!(m.step_bars(PPQ, Tick(0), -1), Tick(0));
     }
 
     #[test]

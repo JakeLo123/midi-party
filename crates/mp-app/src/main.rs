@@ -275,7 +275,7 @@ struct App {
     smoke_seconds: Option<f64>,
     screenshot: Option<PathBuf>,
     /// Where playback starts or resumes. Follows the audio engine while playing and
-    /// rests where it stopped; a ruler click or Enter moves it. Independent of the cursor.
+    /// rests where it stopped; a ruler click or a transport key moves it. Independent of the cursor.
     playhead: Tick,
     /// Set while a ruler drag holds the playhead; true if playback should resume on release.
     scrub: Option<bool>,
@@ -448,6 +448,12 @@ impl App {
                 }
             }
             TransportRequest::Seek { to } => self.seek_playhead(to),
+            TransportRequest::CursorToPlayhead => self.editor.cursor_to_grid_line_at(self.playhead),
+            TransportRequest::StepBars { bars } => {
+                let song = &self.editor.song;
+                let to = song.meter_map.step_bars(song.ppq, self.playhead, bars);
+                self.seek_playhead(to);
+            }
         }
     }
 
