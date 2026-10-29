@@ -277,6 +277,8 @@ struct App {
     /// Where playback starts or resumes. Follows the audio engine while playing and
     /// rests where it stopped; a ruler click or Enter moves it. Independent of the cursor.
     playhead: Tick,
+    /// Set while a ruler drag holds the playhead; true if playback should resume on release.
+    scrub: Option<bool>,
 }
 
 impl App {
@@ -365,6 +367,7 @@ impl App {
             smoke_seconds: args.smoke_seconds,
             screenshot: args.screenshot,
             playhead: Tick::ZERO,
+            scrub: None,
         };
         app.apply_events(startup_events);
         for command in &args.commands {
@@ -385,6 +388,9 @@ impl App {
     /// Pull the playhead along with the audio engine while it plays, so it rests
     /// where playback stopped.
     fn sync_playhead(&mut self) {
+        if self.scrub.is_some() {
+            return;
+        }
         if let Ok(audio) = &self.audio {
             if audio.is_playing() {
                 let song = &self.editor.song;
@@ -403,6 +409,25 @@ impl App {
             if let Err(e) = audio.seek(seconds) {
                 self.status = format!("audio error: {e}");
             }
+        }
+    }
+
+    fn scrub_start(&mut self) {
+        let was_playing = self.is_playing();
+        self.scrub = Some(was_playing);
+        if was_playing {
+            if let Ok(audio) = &mut self.audio {
+                if let Err(e) = audio.stop() {
+                    self.status = format!("audio error: {e}");
+                }
+            }
+        }
+    }
+
+    fn scrub_end(&mut self) {
+        if self.scrub.take() == Some(true) {
+            let seconds = self.tick_seconds(self.playhead);
+            self.with_audio(|a| a.play_from(seconds).map(|_| "playing".into()));
         }
     }
 
@@ -564,6 +589,8 @@ impl App {
                 self.editor.focus = None;
             }
             RollAction::SetPlayhead { tick } => self.seek_playhead(Tick(tick)),
+            RollAction::ScrubStart => self.scrub_start(),
+            RollAction::ScrubEnd => self.scrub_end(),
             RollAction::ClickNote { id, toggle } => {
                 if let Some(note) = self.editor.track().and_then(|t| t.note(id)).copied() {
                     self.editor.cursor = Cursor { tick: note.start, pitch: note.pitch };
@@ -634,6 +661,8 @@ impl App {
                 self.editor.cursor.tick = Tick(tick);
             }
             TracksAction::SetPlayhead { tick } => self.seek_playhead(Tick(tick)),
+            TracksAction::ScrubStart => self.scrub_start(),
+            TracksAction::ScrubEnd => self.scrub_end(),
             TracksAction::PickInstrument { track } if track < tracks => {
                 self.editor.show_track(track);
                 self.editor.focus = None;

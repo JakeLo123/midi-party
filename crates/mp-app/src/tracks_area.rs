@@ -26,6 +26,10 @@ pub enum TracksAction {
     JumpTo { track: usize, tick: u64 },
     /// Click in the ruler: move the playhead.
     SetPlayhead { tick: u64 },
+    /// A drag along the ruler began: pause playback until it ends.
+    ScrubStart,
+    /// The ruler drag ended: resume playback if the drag paused it.
+    ScrubEnd,
     /// Click on the instrument line of a row header: choose that track's sound.
     PickInstrument { track: usize },
 }
@@ -42,13 +46,16 @@ pub struct TracksArea {
     fitted_to_song: bool,
     /// Lane width from the last draw, so follow logic can run between frames.
     lanes_width_px: f32,
+    /// The grid cell the current ruler drag last sent the playhead to, so a drag that
+    /// stays in one cell does not re-seek every frame while the engine plays on.
+    scrub_tick: Option<u64>,
     /// The track whose row was last scrolled into view.
     shown_track: Option<usize>,
 }
 
 impl Default for TracksArea {
     fn default() -> Self {
-        Self { px_per_tick: 0.01, left_tick: 0.0, fitted_to_song: true, lanes_width_px: 0.0, shown_track: None }
+        Self { px_per_tick: 0.01, left_tick: 0.0, fitted_to_song: true, lanes_width_px: 0.0, scrub_tick: None, shown_track: None }
     }
 }
 
@@ -190,10 +197,23 @@ impl TracksArea {
         let ruler = Rect::from_min_max(Pos2::new(lanes_x.min, rect.top()), Pos2::new(rect.right(), rect.top() + RULER_H));
         self.draw_ruler(ui.painter(), ruler, lanes_x, song, theme, &font);
         let ruler_response = ui.interact(ruler, ui.scope_id().with("tracks_ruler"), Sense::click_and_drag());
+        if ruler_response.drag_started() {
+            actions.push(TracksAction::ScrubStart);
+        }
         if ruler_response.clicked() || ruler_response.dragged() {
             if let Some(pos) = ruler_response.interact_pointer_pos() {
-                actions.push(TracksAction::SetPlayhead { tick: snap(self.tick_at_x(lanes_x.min, pos.x)) });
+                let tick = snap(self.tick_at_x(lanes_x.min, pos.x));
+                if self.scrub_tick != Some(tick) {
+                    actions.push(TracksAction::SetPlayhead { tick });
+                    self.scrub_tick = Some(tick);
+                }
             }
+        }
+        if ruler_response.drag_stopped() {
+            actions.push(TracksAction::ScrubEnd);
+        }
+        if !ruler_response.dragged() {
+            self.scrub_tick = None;
         }
 
         let rows_rect = Rect::from_min_max(Pos2::new(rect.left(), ruler.bottom()), rect.max);

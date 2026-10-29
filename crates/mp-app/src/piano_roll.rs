@@ -34,6 +34,10 @@ pub enum RollAction {
     BoxSelect { t0: u64, t1: u64, p_lo: u8, p_hi: u8, add: bool },
     /// Click in the ruler: move the playhead.
     SetPlayhead { tick: u64 },
+    /// A drag along the ruler began: pause playback until it ends.
+    ScrubStart,
+    /// The ruler drag ended: resume playback if the drag paused it.
+    ScrubEnd,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -301,7 +305,10 @@ impl RollView {
         }
 
         if response.drag_started() && in_ruler {
-            self.drag = Some(Drag { kind: DragKind::Scrub, origin: (0.0, 0), applied: (0, 0), add: false });
+            let tick = snap(self.tick_at_x(area, pos.x));
+            actions.push(RollAction::ScrubStart);
+            actions.push(RollAction::SetPlayhead { tick });
+            self.drag = Some(Drag { kind: DragKind::Scrub, origin: (0.0, 0), applied: (tick as i64, 0), add: false });
         } else if response.drag_started() && in_area {
             let origin = (self.tick_at_x(area, pos.x), self.pitch_at_y(area, pos.y));
             let kind = match self.note_hit(area, editor, pos) {
@@ -325,7 +332,14 @@ impl RollView {
                 let tick = self.tick_at_x(area, pos.x);
                 let pitch = self.pitch_at_y(area, pos.y);
                 match drag.kind {
-                    DragKind::Scrub => actions.push(RollAction::SetPlayhead { tick: snap(tick) }),
+                    // Re-seeking the same cell every frame would restart playback over and over.
+                    DragKind::Scrub => {
+                        let cell = snap(tick) as i64;
+                        if cell != drag.applied.0 {
+                            actions.push(RollAction::SetPlayhead { tick: cell as u64 });
+                            drag.applied.0 = cell;
+                        }
+                    }
                     DragKind::Move | DragKind::Resize => {
                         let steps = ((tick - drag.origin.0) / grid as f64).round() as i64;
                         let semis = if drag.kind == DragKind::Move { pitch - drag.origin.1 } else { 0 };
@@ -359,6 +373,9 @@ impl RollView {
 
     fn finish_drag(&mut self, area: Rect, _editor: &Editor, actions: &mut Vec<RollAction>, pos: Option<Pos2>) {
         if let Some(drag) = self.drag.take() {
+            if drag.kind == DragKind::Scrub {
+                actions.push(RollAction::ScrubEnd);
+            }
             if drag.kind == DragKind::Box {
                 if let Some(pos) = pos {
                     let tick = self.tick_at_x(area, pos.x);
