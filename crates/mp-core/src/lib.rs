@@ -35,7 +35,7 @@ pub use gm::{drum_kit_name, percussion_name, percussion_short, program_name, GM_
 pub use project::ProjectError;
 pub use song::{
     is_default_track_name, Instrument, LaneKind, LaneKindParseError, LanePoint, Lanes, Note, NoteId, Song, Tick, Track,
-    DEFAULT_MASTER_REVERB, DEFAULT_PPQ, DRUM_CHANNEL,
+    DEFAULT_MASTER_REVERB, DEFAULT_PPQ, DEFAULT_TRACK_HEADER_WIDTH, DRUM_CHANNEL,
 };
 pub use test_harness::{default_keymap, drive, drive_with, feed_one, try_drive_with, DriveError, DEFAULT_KEYMAP_TOML};
 pub use time::{

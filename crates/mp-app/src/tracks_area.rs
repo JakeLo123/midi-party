@@ -2,13 +2,30 @@
 //! whole song, the cursor and playhead over all of them. It has its own zoom and
 //! scroll, independent of the piano roll, and starts fitted to the song.
 
-use egui::{Align2, Color32, FontId, Painter, Pos2, Rangef, Rect, Sense, Stroke, Ui, Vec2};
-use mp_core::{pan_label, Editor, Note, Song, Tick};
+use egui::text::{LayoutJob, TextWrapping};
+use egui::{Align2, Color32, CornerRadius, CursorIcon, FontId, Painter, Pos2, Rangef, Rect, Sense, Stroke, Ui, Vec2};
+use mp_core::{pan_label, Editor, Note, Song, Tick, MAX_TRACK_VOLUME_PERCENT};
 
 use crate::theme::Theme;
 
-const HEADER_W: f32 = 190.0;
-const ROW_H: f32 = 40.0;
+/// The header column can be dragged no narrower than this.
+const MIN_HEADER_W: f32 = 110.0;
+/// The lanes always keep at least this much room, whatever the header is dragged to.
+const MIN_LANES_W: f32 = 120.0;
+/// Width of the invisible strip on the header's right edge that resizes it.
+const RESIZE_GRIP_W: f32 = 8.0;
+const HEADER_PAD: f32 = 6.0;
+const BADGE_SIZE: Vec2 = Vec2::new(16.0, 14.0);
+const VOLUME_SLIDER_W: f32 = 64.0;
+const PAN_KNOB_RADIUS: f32 = 8.0;
+/// How far the pan knob turns either side of centre, in radians (±135°).
+const PAN_KNOB_SWEEP: f32 = std::f32::consts::PI * 0.75;
+/// Pan units per pixel of knob drag.
+const PAN_DRAG_RATE: f32 = 1.0;
+const ROW_H: f32 = 46.0;
+/// Centre lines of a header's two rows of text and controls, from the row's top.
+const LINE1_Y: f32 = 12.0;
+const LINE2_Y: f32 = 34.0;
 const RULER_H: f32 = 16.0;
 /// The fitted view never shows fewer bars than this, so an empty song still has a map.
 const MIN_FIT_BARS: u32 = 16;
@@ -32,6 +49,65 @@ pub enum TracksAction {
     ScrubEnd,
     /// Click on the instrument line of a row header: choose that track's sound.
     PickInstrument { track: usize },
+    /// The header column was dragged to this width; the song remembers it.
+    ResizeHeader { width: f32 },
+    /// The M badge of a row was clicked.
+    ToggleMute { track: usize },
+    /// The S badge of a row was clicked.
+    ToggleSolo { track: usize },
+    /// The volume slider of a row was moved, in percent 0..=200.
+    SetVolume { track: usize, percent: i32 },
+    /// The pan knob of a row was turned, -100..=100.
+    SetPan { track: usize, value: i32 },
+    /// A slider or knob drag ended: the next change is a separate undo step.
+    EndMixGesture,
+}
+
+/// Where a row header's controls sit: badges on the first line, slider and knob on
+/// the second, all flush right so they stay put while the names give way.
+struct HeaderControls {
+    mute: Rect,
+    solo: Rect,
+    slider: Rect,
+    knob: Rect,
+    line1_y: f32,
+    line2_y: f32,
+}
+
+fn header_controls(header: Rect) -> HeaderControls {
+    let line1_y = header.top() + LINE1_Y;
+    let line2_y = header.top() + LINE2_Y;
+    let solo = Rect::from_center_size(Pos2::new(header.right() - HEADER_PAD - BADGE_SIZE.x / 2.0, line1_y), BADGE_SIZE);
+    let mute = solo.translate(Vec2::new(-(BADGE_SIZE.x + 3.0), 0.0));
+    let knob = Rect::from_center_size(Pos2::new(header.right() - HEADER_PAD - PAN_KNOB_RADIUS, line2_y), Vec2::splat(PAN_KNOB_RADIUS * 2.0));
+    let slider = Rect::from_center_size(Pos2::new(knob.left() - 8.0 - VOLUME_SLIDER_W / 2.0, line2_y), Vec2::new(VOLUME_SLIDER_W, 14.0));
+    HeaderControls { mute, solo, slider, knob, line1_y, line2_y }
+}
+
+/// The volume percent a pointer at `x` on `slider` asks for: 0% at the left edge, 200% at the right.
+fn slider_percent_at(slider: Rect, x: f32) -> i32 {
+    let t = ((x - slider.left()) / slider.width()).clamp(0.0, 1.0);
+    (t * MAX_TRACK_VOLUME_PERCENT as f32).round() as i32
+}
+
+/// The pan value after dragging a knob by `delta` pixels from `start`: right or up turns it right.
+fn knob_value_after_drag(start: i32, delta: Vec2) -> i32 {
+    (start as f32 + (delta.x - delta.y) * PAN_DRAG_RATE).round().clamp(-100.0, 100.0) as i32
+}
+
+/// The knob pointer's angle for `pan` in -100..=100: straight up at centre, `PAN_KNOB_SWEEP` either side.
+fn knob_angle(pan: i32) -> f32 {
+    pan as f32 / 100.0 * PAN_KNOB_SWEEP
+}
+
+/// The header width the song asks for, kept inside what `area_width` can show.
+fn clamp_header_width(wanted: f32, area_width: f32) -> f32 {
+    let max = (area_width - MIN_LANES_W).max(MIN_HEADER_W);
+    if wanted.is_finite() {
+        wanted.clamp(MIN_HEADER_W, max)
+    } else {
+        MIN_HEADER_W.min(max)
+    }
 }
 
 /// Whether a click in a row header landed on its instrument line (the lower half).
@@ -107,6 +183,75 @@ fn note_rect(lane: Rect, x0: f32, x1: f32, pitch: u8, span: (u8, u8)) -> Rect {
     Rect::from_min_size(Pos2::new(x0, bottom - h), Vec2::new(w, h))
 }
 
+/// Draws `text` left-aligned at `pos` (vertically centred), elided with `…` past `max_width`.
+fn draw_truncated(painter: &Painter, pos: Pos2, text: &str, max_width: f32, font: &FontId, color: Color32) {
+    if max_width <= 0.0 {
+        return;
+    }
+    let mut job = LayoutJob::simple_singleline(text.to_string(), font.clone(), color);
+    job.wrap = TextWrapping::truncate_at_width(max_width);
+    let galley = painter.layout_job(job);
+    let top_left = Pos2::new(pos.x, pos.y - galley.size().y / 2.0);
+    painter.galley(top_left, galley, color);
+}
+
+/// Which header controls the pointer is on, for highlighting.
+#[derive(Clone, Copy, Default)]
+struct HeaderHot {
+    mute: bool,
+    solo: bool,
+    slider: bool,
+    knob: bool,
+}
+
+/// A one-letter mute or solo badge: filled with `on_color` when on, an outline when off.
+#[allow(clippy::too_many_arguments)]
+fn draw_badge(painter: &Painter, rect: Rect, letter: &str, on: bool, hot: bool, on_color: Color32, theme: &Theme, font: &FontId) {
+    let rounding = CornerRadius::same(3);
+    if on {
+        painter.rect_filled(rect, rounding, on_color);
+        painter.text(rect.center(), Align2::CENTER_CENTER, letter, font.clone(), theme.color("status_bg"));
+    } else {
+        let edge = theme.color(if hot { "status_fg" } else { "bar_line" });
+        painter.rect_stroke(rect, rounding, Stroke::new(1.0, edge), egui::StrokeKind::Inside);
+        painter.text(rect.center(), Align2::CENTER_CENTER, letter, font.clone(), theme.color(if hot { "status_fg" } else { "status_dim" }));
+    }
+}
+
+/// A horizontal fader: 0% at the left end, 200% at the right, a tick at 100%.
+fn draw_volume_slider(painter: &Painter, rect: Rect, percent: i32, hot: bool, theme: &Theme) {
+    let track = Rect::from_center_size(rect.center(), Vec2::new(rect.width(), 4.0));
+    let t = (percent as f32 / MAX_TRACK_VOLUME_PERCENT as f32).clamp(0.0, 1.0);
+    let x = track.left() + t * track.width();
+    painter.rect_filled(track, CornerRadius::same(2), theme.color("bar_line"));
+    painter.rect_filled(Rect::from_min_max(track.min, Pos2::new(x, track.bottom())), CornerRadius::same(2), theme.color(if hot { "status_fg" } else { "note" }));
+    let unity_x = track.left() + track.width() / 2.0;
+    painter.vline(unity_x, Rangef::new(rect.top() + 1.0, rect.bottom() - 1.0), Stroke::new(1.0, theme.color("status_dim")));
+    painter.circle_filled(Pos2::new(x, rect.center().y), 5.0, theme.color(if hot { "status_fg" } else { "note" }));
+}
+
+/// A rotary pan knob: pointer straight up at centre, turned left or right for L/R.
+fn draw_pan_knob(painter: &Painter, rect: Rect, pan: i32, hot: bool, theme: &Theme) {
+    let centre = rect.center();
+    let radius = rect.width() / 2.0;
+    painter.circle(centre, radius, theme.color("status_bg"), Stroke::new(1.0, theme.color(if hot { "status_fg" } else { "bar_line" })));
+    // The arc from straight up to the pointer shows how far off centre the pan is.
+    let angle = knob_angle(pan);
+    let steps = (angle.abs() / 0.15).ceil().max(1.0) as usize;
+    let arc_radius = radius + 1.5;
+    let arc: Vec<Pos2> = (0..=steps)
+        .map(|k| {
+            let a = angle * k as f32 / steps as f32;
+            centre + Vec2::new(a.sin(), -a.cos()) * arc_radius
+        })
+        .collect();
+    if pan != 0 {
+        painter.add(egui::Shape::line(arc, Stroke::new(2.0, theme.color("note"))));
+    }
+    let tip = centre + Vec2::new(angle.sin(), -angle.cos()) * (radius - 1.5);
+    painter.line_segment([centre, tip], Stroke::new(2.0, theme.color(if hot { "status_fg" } else { "note" })));
+}
+
 impl TracksArea {
     pub fn fit_to_song(&mut self) {
         self.fitted_to_song = true;
@@ -163,13 +308,14 @@ impl TracksArea {
         actions: &mut Vec<TracksAction>,
     ) {
         let rect = ui.available_rect_before_wrap();
-        if !rect.is_positive() || rect.width() <= HEADER_W + 1.0 {
+        if !rect.is_positive() || rect.width() <= MIN_HEADER_W + MIN_LANES_W {
             return;
         }
         // A resizable panel sizes itself from what its content allocates, so claim the whole area.
         ui.allocate_rect(rect, Sense::hover());
         ui.painter().rect_filled(rect, 0.0, theme.color("status_bg"));
-        let lanes_x = Rangef::new(rect.left() + HEADER_W, rect.right());
+        let header_w = clamp_header_width(editor.song.track_header_width, rect.width());
+        let lanes_x = Rangef::new(rect.left() + header_w, rect.right());
         self.lanes_width_px = lanes_x.span();
         let song = &editor.song;
         if self.fitted_to_song {
@@ -230,12 +376,54 @@ impl TracksArea {
                     rows_top = row.top();
                 }
                 rows_bottom = row.bottom();
-                let header = Rect::from_min_max(row.min, Pos2::new(row.left() + HEADER_W, row.bottom()));
+                let header = Rect::from_min_max(row.min, Pos2::new(row.left() + header_w, row.bottom()));
                 let lane = Rect::from_min_max(Pos2::new(header.right(), row.top()), row.max);
-                let painter = ui.painter();
                 let muted = track.mute || (any_solo && !track.solo);
                 let instrument = instrument_names.get(i).map(String::as_str).unwrap_or("");
-                self.draw_header(painter, header, i, track, instrument, current, muted, theme, &header_font);
+                let controls = header_controls(header);
+                // Registered after the row so they take the pointer where they overlap it.
+                let row_id = ui.scope_id().with(("track_header", i));
+                let mute_response = ui.interact(controls.mute, row_id.with("mute"), Sense::click());
+                let solo_response = ui.interact(controls.solo, row_id.with("solo"), Sense::click());
+                let slider_response = ui.interact(controls.slider, row_id.with("volume"), Sense::click_and_drag());
+                let knob_response = ui.interact(controls.knob, row_id.with("pan"), Sense::click_and_drag());
+                let volume_percent = (track.volume * 100.0).round() as i32;
+                let pan_value = (track.pan * 100.0).round() as i32;
+                if mute_response.clicked() {
+                    actions.push(TracksAction::ToggleMute { track: i });
+                }
+                if solo_response.clicked() {
+                    actions.push(TracksAction::ToggleSolo { track: i });
+                }
+                if slider_response.double_clicked() {
+                    actions.push(TracksAction::SetVolume { track: i, percent: 100 });
+                } else if slider_response.clicked() || slider_response.dragged() {
+                    if let Some(pos) = slider_response.interact_pointer_pos() {
+                        let percent = slider_percent_at(controls.slider, pos.x);
+                        if percent != volume_percent {
+                            actions.push(TracksAction::SetVolume { track: i, percent });
+                        }
+                    }
+                }
+                if knob_response.double_clicked() {
+                    actions.push(TracksAction::SetPan { track: i, value: 0 });
+                } else if knob_response.dragged() {
+                    let value = knob_value_after_drag(pan_value, knob_response.drag_delta());
+                    if value != pan_value {
+                        actions.push(TracksAction::SetPan { track: i, value });
+                    }
+                }
+                if slider_response.drag_stopped() || knob_response.drag_stopped() {
+                    actions.push(TracksAction::EndMixGesture);
+                }
+                let painter = ui.painter();
+                let hot = HeaderHot {
+                    mute: mute_response.hovered(),
+                    solo: solo_response.hovered(),
+                    slider: slider_response.hovered() || slider_response.dragged(),
+                    knob: knob_response.hovered() || knob_response.dragged(),
+                };
+                self.draw_header(painter, header, &controls, i, track, instrument, current, muted, hot, theme, &header_font);
                 self.draw_lane(painter, lane, track, current, muted, song, theme);
                 painter.hline(row.x_range(), row.bottom() - 0.5, Stroke::new(1.0, theme.color("grid")));
                 if response.clicked() {
@@ -278,6 +466,22 @@ impl TracksArea {
             overlay.vline(x, full_y, Stroke::new(2.0, color));
             crate::piano_roll::draw_playhead_marker(&overlay, x, ruler.bottom(), color);
         }
+
+        // Registered after the rows and ruler so it wins the pointer where they overlap.
+        let grip = Rect::from_x_y_ranges(Rangef::new(lanes_x.min - RESIZE_GRIP_W / 2.0, lanes_x.min + RESIZE_GRIP_W / 2.0), rect.y_range());
+        let grip_response = ui.interact(grip, ui.scope_id().with("tracks_header_grip"), Sense::drag());
+        if grip_response.hovered() || grip_response.dragged() {
+            ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
+            ui.painter().vline(lanes_x.min, rect.y_range(), Stroke::new(2.0, theme.color("accent")));
+        }
+        if grip_response.dragged() {
+            if let Some(pos) = grip_response.interact_pointer_pos() {
+                let width = clamp_header_width(pos.x - rect.left(), rect.width());
+                if width != header_w {
+                    actions.push(TracksAction::ResizeHeader { width });
+                }
+            }
+        }
     }
 
     fn draw_ruler(&self, painter: &Painter, ruler: Rect, lanes_x: Rangef, song: &Song, theme: &Theme, font: &FontId) {
@@ -305,19 +509,45 @@ impl TracksArea {
         painter.hline(ruler.x_range(), ruler.bottom() - 0.5, Stroke::new(1.0, theme.color("bar_line")));
     }
 
+    /// Two lines: `N Name` with the mute and solo badges on the right, then the
+    /// instrument with the volume slider and pan knob on the right. The names give
+    /// way to the controls, so those stay usable however narrow the header is dragged.
     #[allow(clippy::too_many_arguments)]
-    fn draw_header(&self, painter: &Painter, header: Rect, index: usize, track: &mp_core::Track, instrument: &str, current: bool, muted: bool, theme: &Theme, font: &FontId) {
+    fn draw_header(&self, painter: &Painter, header: Rect, controls: &HeaderControls, index: usize, track: &mp_core::Track, instrument: &str, current: bool, muted: bool, hot: HeaderHot, theme: &Theme, font: &FontId) {
         let painter = painter.with_clip_rect(header);
         if current {
             painter.rect_filled(header, 0.0, theme.color("black_key_row"));
         }
-        let flags = format!("{}{}", if track.mute { "M" } else { "·" }, if track.solo { "S" } else { "·" });
-        let line1 = format!("{:>2} {} {flags}", index + 1, track.name);
-        let line2 = format!("   {instrument} {:>3}% {}", (track.volume * 100.0).round() as i32, pan_label((track.pan * 100.0).round() as i32));
+        let dim = theme.color("status_dim");
+        let volume_percent = (track.volume * 100.0).round() as i32;
+        let pan_value = (track.pan * 100.0).round() as i32;
+
+        draw_badge(&painter, controls.mute, "M", track.mute, hot.mute, theme.color("error"), theme, font);
+        draw_badge(&painter, controls.solo, "S", track.solo, hot.solo, theme.color("note_selected"), theme, font);
+        draw_volume_slider(&painter, controls.slider, volume_percent, hot.slider, theme);
+        draw_pan_knob(&painter, controls.knob, pan_value, hot.knob, theme);
+
         let name_color = if current { "note_selected" } else if muted { "status_dim" } else { "status_fg" };
-        let x = header.left() + 6.0;
-        painter.text(Pos2::new(x, header.top() + header.height() * 0.3), Align2::LEFT_CENTER, line1, font.clone(), theme.color(name_color));
-        painter.text(Pos2::new(x, header.top() + header.height() * 0.72), Align2::LEFT_CENTER, line2, font.clone(), theme.color("status_dim"));
+        let x = header.left() + HEADER_PAD;
+        let name = format!("{:>2} {}", index + 1, track.name);
+        draw_truncated(&painter, Pos2::new(x, controls.line1_y), &name, controls.mute.left() - HEADER_PAD - x, font, theme.color(name_color));
+        let indent = 3.0 * font.size * 0.6;
+        draw_truncated(&painter, Pos2::new(x + indent, controls.line2_y), instrument, controls.slider.left() - HEADER_PAD - x - indent, font, dim);
+
+        // The value of the control under the pointer, over the first line so it never hides the control itself.
+        let value_label = if hot.slider {
+            Some((controls.slider.center().x, format!("{volume_percent}%")))
+        } else if hot.knob {
+            Some((controls.knob.center().x, pan_label(pan_value)))
+        } else {
+            None
+        };
+        if let Some((x, text)) = value_label {
+            let x = x.min(controls.mute.left() - HEADER_PAD - 20.0);
+            let rect = painter.text(Pos2::new(x, controls.line1_y), Align2::CENTER_CENTER, text.clone(), font.clone(), theme.color("status_fg"));
+            painter.rect_filled(rect.expand(3.0), CornerRadius::same(3), theme.color("status_bg"));
+            painter.text(Pos2::new(x, controls.line1_y), Align2::CENTER_CENTER, text, font.clone(), theme.color("status_fg"));
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -361,11 +591,56 @@ mod tests {
 
     #[test]
     fn the_lower_half_of_a_header_is_its_instrument_line() {
-        let header = Rect::from_min_size(Pos2::new(0.0, 100.0), Vec2::new(HEADER_W, ROW_H));
+        let header = Rect::from_min_size(Pos2::new(0.0, 100.0), Vec2::new(190.0, ROW_H));
         assert!(!header_instrument_hit(header, Pos2::new(10.0, 105.0)));
         assert!(header_instrument_hit(header, Pos2::new(10.0, 130.0)));
     }
     use mp_core::{Note, NoteId, Track};
+
+    #[test]
+    fn slider_runs_from_0_to_200_percent() {
+        let slider = Rect::from_min_size(Pos2::new(100.0, 0.0), Vec2::new(64.0, 14.0));
+        assert_eq!(slider_percent_at(slider, 100.0), 0);
+        assert_eq!(slider_percent_at(slider, 132.0), 100);
+        assert_eq!(slider_percent_at(slider, 164.0), 200);
+        assert_eq!(slider_percent_at(slider, 50.0), 0, "past the left end is 0");
+        assert_eq!(slider_percent_at(slider, 900.0), 200, "past the right end is 200");
+    }
+
+    #[test]
+    fn knob_turns_right_when_dragged_right_or_up_and_stops_at_the_ends() {
+        assert_eq!(knob_value_after_drag(0, Vec2::new(10.0, 0.0)), 10);
+        assert_eq!(knob_value_after_drag(0, Vec2::new(0.0, -10.0)), 10);
+        assert_eq!(knob_value_after_drag(0, Vec2::new(-10.0, 0.0)), -10);
+        assert_eq!(knob_value_after_drag(95, Vec2::new(50.0, 0.0)), 100);
+        assert_eq!(knob_value_after_drag(-95, Vec2::new(-50.0, 0.0)), -100);
+        assert_eq!(knob_angle(0), 0.0);
+        assert_eq!(knob_angle(100), PAN_KNOB_SWEEP);
+        assert_eq!(knob_angle(-100), -PAN_KNOB_SWEEP);
+    }
+
+    #[test]
+    fn header_controls_sit_inside_the_header_flush_right() {
+        let header = Rect::from_min_size(Pos2::new(0.0, 100.0), Vec2::new(220.0, ROW_H));
+        let c = header_controls(header);
+        for r in [c.mute, c.solo, c.slider, c.knob] {
+            assert!(header.contains_rect(r), "{r:?} outside {header:?}");
+        }
+        assert!(c.mute.right() < c.solo.left());
+        assert!(c.slider.right() < c.knob.left());
+        assert!(c.solo.right() <= header.right() - HEADER_PAD + 0.01);
+        assert!(c.knob.right() <= header.right() - HEADER_PAD + 0.01);
+        assert!(c.knob.top() - c.solo.bottom() >= 5.0, "badges and knob do not crowd each other");
+    }
+
+    #[test]
+    fn header_width_stays_between_its_minimum_and_the_lanes_minimum() {
+        assert_eq!(clamp_header_width(220.0, 1000.0), 220.0);
+        assert_eq!(clamp_header_width(10.0, 1000.0), MIN_HEADER_W);
+        assert_eq!(clamp_header_width(950.0, 1000.0), 1000.0 - MIN_LANES_W);
+        assert_eq!(clamp_header_width(f32::NAN, 1000.0), MIN_HEADER_W);
+        assert_eq!(clamp_header_width(500.0, 200.0), MIN_HEADER_W, "a tiny window never squeezes the header below its minimum");
+    }
 
     fn note(pitch: u8) -> Note {
         Note { id: NoteId(pitch as u64), start: Tick::ZERO, duration: Tick(1), pitch, velocity: 100 }

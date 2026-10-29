@@ -652,7 +652,30 @@ impl App {
     }
 
     fn apply_tracks_action(&mut self, action: TracksAction) {
+        if let TracksAction::ResizeHeader { width } = action {
+            self.editor.song.track_header_width = width;
+            self.dirty = true;
+            return;
+        }
         if self.cmdline.is_some() || self.show_cheat_sheet || self.picker.open {
+            return;
+        }
+        let mix = match action {
+            TracksAction::ToggleMute { track } => Some(self.editor.toggle_mute_of(track)),
+            TracksAction::ToggleSolo { track } => Some(self.editor.toggle_solo_of(track)),
+            TracksAction::SetVolume { track, percent } => Some(self.editor.set_volume_of(track, percent)),
+            TracksAction::SetPan { track, value } => Some(self.editor.set_pan_of(track, value)),
+            TracksAction::EndMixGesture => {
+                self.editor.end_mix_gesture();
+                return;
+            }
+            _ => None,
+        };
+        if let Some(result) = mix {
+            match result {
+                Ok(events) => self.apply_events(events),
+                Err(e) => self.status = e.to_string(),
+            }
             return;
         }
         let tracks = self.editor.song.tracks.len();
@@ -674,7 +697,15 @@ impl App {
                 self.editor.focus = None;
                 self.open_picker(track);
             }
-            TracksAction::ShowTrack { .. } | TracksAction::JumpTo { .. } | TracksAction::PickInstrument { .. } => {}
+            TracksAction::ShowTrack { .. }
+            | TracksAction::JumpTo { .. }
+            | TracksAction::PickInstrument { .. }
+            | TracksAction::ResizeHeader { .. }
+            | TracksAction::ToggleMute { .. }
+            | TracksAction::ToggleSolo { .. }
+            | TracksAction::SetVolume { .. }
+            | TracksAction::SetPan { .. }
+            | TracksAction::EndMixGesture => {}
         }
         self.scroll_views_to_cursor();
     }

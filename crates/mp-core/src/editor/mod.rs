@@ -282,7 +282,10 @@ impl Editor {
     }
 
     fn restore(&mut self, s: Snapshot) {
+        // The header width is layout, not an edit: undo never moves it.
+        let header_width = self.song.track_header_width;
         self.song = s.song;
+        self.song.track_header_width = header_width;
         self.cursor = s.cursor;
         self.selection = s.selection;
         self.track_index = s.track_index.min(self.song.tracks.len().saturating_sub(1));
@@ -515,19 +518,19 @@ impl Editor {
             Command::RenameTrack { name } => self.rename_track(name, &mut ev)?,
             Command::SetTrackVolume { percent } => {
                 let percent = i32::try_from(count.unwrap_or(u32::from(*percent))).unwrap_or(i32::MAX);
-                self.set_track_volume(percent, None, &mut ev)?;
+                self.set_track_volume(self.track_index, percent, None, &mut ev)?;
             }
             Command::NudgeTrackVolume { delta } => {
-                let wanted = self.track_volume_percent()? + i32::from(*delta) * i32::try_from(n).unwrap_or(i32::MAX);
-                self.set_track_volume(wanted, Some("track_volume"), &mut ev)?;
+                let wanted = self.track_volume_percent(self.track_index)? + i32::from(*delta) * i32::try_from(n).unwrap_or(i32::MAX);
+                self.set_track_volume(self.track_index, wanted, Some("track_volume"), &mut ev)?;
             }
-            Command::SetTrackPan { value } => self.set_track_pan(i32::from(*value), None, &mut ev)?,
+            Command::SetTrackPan { value } => self.set_track_pan(self.track_index, i32::from(*value), None, &mut ev)?,
             Command::NudgeTrackPan { delta } => {
-                let wanted = self.track_pan_percent()? + i32::from(*delta) * i32::try_from(n).unwrap_or(i32::MAX);
-                self.set_track_pan(wanted, Some("track_pan"), &mut ev)?;
+                let wanted = self.track_pan_percent(self.track_index)? + i32::from(*delta) * i32::try_from(n).unwrap_or(i32::MAX);
+                self.set_track_pan(self.track_index, wanted, Some("track_pan"), &mut ev)?;
             }
-            Command::ToggleMute => self.toggle_mute(&mut ev)?,
-            Command::ToggleSolo => self.toggle_solo(&mut ev)?,
+            Command::ToggleMute => self.toggle_mute(self.track_index, &mut ev)?,
+            Command::ToggleSolo => self.toggle_solo(self.track_index, &mut ev)?,
             Command::SetTrackChannel { channel } => self.set_track_channel(*channel, &mut ev)?,
             Command::SetPreset { preset } => self.set_preset(*preset, &mut ev)?,
             Command::SetDrumKit { kit } => self.set_drum_kit(*kit, &mut ev)?,
@@ -1197,18 +1200,60 @@ impl Editor {
         self.track().ok_or(EditError::NoTracks)
     }
 
+    fn track_at(&self, index: usize) -> Result<&Track, EditError> {
+        self.song.tracks.get(index).ok_or(EditError::NoTracks)
+    }
+
     /// `"2/3: Bass"` for status strings.
-    fn track_label(&self) -> String {
-        let name = self.track().map(|t| t.name.as_str()).unwrap_or("");
-        format!("{}/{}: {name}", self.track_index + 1, self.song.tracks.len())
+    fn track_label(&self, index: usize) -> String {
+        let name = self.song.track(index).map(|t| t.name.as_str()).unwrap_or("");
+        format!("{}/{}: {name}", index + 1, self.song.tracks.len())
     }
 
-    fn track_volume_percent(&self) -> Result<i32, EditError> {
-        Ok((self.current_track()?.volume * 100.0).round() as i32)
+    fn track_volume_percent(&self, index: usize) -> Result<i32, EditError> {
+        Ok((self.track_at(index)?.volume * 100.0).round() as i32)
     }
 
-    fn track_pan_percent(&self) -> Result<i32, EditError> {
-        Ok((self.current_track()?.pan * 100.0).round() as i32)
+    fn track_pan_percent(&self, index: usize) -> Result<i32, EditError> {
+        Ok((self.track_at(index)?.pan * 100.0).round() as i32)
+    }
+
+    // ----- mixer edits from the track headers -----
+    //
+    // These name the track instead of acting on the shown one, so a click on another
+    // row's mute button leaves the piano roll where it is. Undo and events work as
+    // for the commands.
+
+    /// Sets track `index`'s volume to `percent` (0..=200). Repeated calls merge into
+    /// one undo step until [`Editor::end_mix_gesture`].
+    pub fn set_volume_of(&mut self, index: usize, percent: i32) -> Result<Vec<EditorEvent>, EditError> {
+        let mut ev = Vec::new();
+        self.set_track_volume(index, percent, Some("track_volume"), &mut ev)?;
+        Ok(ev)
+    }
+
+    /// Sets track `index`'s pan to `value` (-100..=100); merges like [`Editor::set_volume_of`].
+    pub fn set_pan_of(&mut self, index: usize, value: i32) -> Result<Vec<EditorEvent>, EditError> {
+        let mut ev = Vec::new();
+        self.set_track_pan(index, value, Some("track_pan"), &mut ev)?;
+        Ok(ev)
+    }
+
+    pub fn toggle_mute_of(&mut self, index: usize) -> Result<Vec<EditorEvent>, EditError> {
+        let mut ev = Vec::new();
+        self.toggle_mute(index, &mut ev)?;
+        Ok(ev)
+    }
+
+    pub fn toggle_solo_of(&mut self, index: usize) -> Result<Vec<EditorEvent>, EditError> {
+        let mut ev = Vec::new();
+        self.toggle_solo(index, &mut ev)?;
+        Ok(ev)
+    }
+
+    /// Ends a slider or knob drag: the next change starts a new undo step.
+    pub fn end_mix_gesture(&mut self) {
+        self.undo.break_coalescing();
     }
 
     fn add_tracks(&mut self, n: u32, ev: &mut Vec<EditorEvent>) -> Result<(), EditError> {
@@ -1222,7 +1267,7 @@ impl Editor {
         self.show_track(index);
         ev.push(EditorEvent::SongChanged);
         let added = if n == 1 { "added track".to_string() } else { format!("added {n} tracks, showing") };
-        ev.push(EditorEvent::Status(format!("{added} {}", self.track_label())));
+        ev.push(EditorEvent::Status(format!("{added} {}", self.track_label(self.track_index))));
         Ok(())
     }
 
@@ -1236,7 +1281,7 @@ impl Editor {
         let index = self.track_index.min(self.song.tracks.len() - 1);
         self.show_track(index);
         ev.push(EditorEvent::SongChanged);
-        ev.push(EditorEvent::Status(format!("removed track {name}; showing {}", self.track_label())));
+        ev.push(EditorEvent::Status(format!("removed track {name}; showing {}", self.track_label(self.track_index))));
         Ok(())
     }
 
@@ -1254,7 +1299,7 @@ impl Editor {
         }
         self.show_track(index);
         ev.push(EditorEvent::SongChanged);
-        ev.push(EditorEvent::Status(format!("duplicated track {name}; showing {}", self.track_label())));
+        ev.push(EditorEvent::Status(format!("duplicated track {name}; showing {}", self.track_label(self.track_index))));
         Ok(())
     }
 
@@ -1278,7 +1323,7 @@ impl Editor {
         ev.push(EditorEvent::Status(format!(
             "moved track {} to {}",
             if delta < 0 { "up" } else { "down" },
-            self.track_label()
+            self.track_label(self.track_index)
         )));
         Ok(())
     }
@@ -1299,41 +1344,41 @@ impl Editor {
 
     /// Sets the track volume to `percent` (clamped to 0..=200). `coalesce` is the undo
     /// key for nudges, which also makes "no change" an error instead of a no-op.
-    fn set_track_volume(&mut self, percent: i32, coalesce: Option<&str>, ev: &mut Vec<EditorEvent>) -> Result<(), EditError> {
+    fn set_track_volume(&mut self, index: usize, percent: i32, coalesce: Option<&str>, ev: &mut Vec<EditorEvent>) -> Result<(), EditError> {
         let percent = percent.clamp(0, MAX_TRACK_VOLUME_PERCENT);
-        if self.track_volume_percent()? == percent {
+        if self.track_volume_percent(index)? == percent {
             if coalesce.is_some() {
                 return Err(EditError::OutOfRange(format!("volume already at {percent}%")));
             }
         } else {
             self.commit(coalesce);
-            self.track_mut().volume = percent as f32 / 100.0;
+            self.song.tracks[index].volume = percent as f32 / 100.0;
             ev.push(EditorEvent::SongChanged);
         }
-        ev.push(EditorEvent::Status(format!("volume {percent}% on {}", self.track_label())));
+        ev.push(EditorEvent::Status(format!("volume {percent}% on {}", self.track_label(index))));
         Ok(())
     }
 
     /// Sets the track pan to `value` (clamped to -100..=100); see [`Editor::set_track_volume`].
-    fn set_track_pan(&mut self, value: i32, coalesce: Option<&str>, ev: &mut Vec<EditorEvent>) -> Result<(), EditError> {
+    fn set_track_pan(&mut self, index: usize, value: i32, coalesce: Option<&str>, ev: &mut Vec<EditorEvent>) -> Result<(), EditError> {
         let value = value.clamp(-100, 100);
-        if self.track_pan_percent()? == value {
+        if self.track_pan_percent(index)? == value {
             if coalesce.is_some() {
                 return Err(EditError::OutOfRange(format!("pan already at {}", pan_label(value))));
             }
         } else {
             self.commit(coalesce);
-            self.track_mut().pan = value as f32 / 100.0;
+            self.song.tracks[index].pan = value as f32 / 100.0;
             ev.push(EditorEvent::SongChanged);
         }
-        ev.push(EditorEvent::Status(format!("pan {} on {}", pan_label(value), self.track_label())));
+        ev.push(EditorEvent::Status(format!("pan {} on {}", pan_label(value), self.track_label(index))));
         Ok(())
     }
 
-    fn toggle_mute(&mut self, ev: &mut Vec<EditorEvent>) -> Result<(), EditError> {
-        let name = self.current_track()?.name.clone();
+    fn toggle_mute(&mut self, index: usize, ev: &mut Vec<EditorEvent>) -> Result<(), EditError> {
+        let name = self.track_at(index)?.name.clone();
         self.commit(None);
-        let track = self.track_mut();
+        let track = &mut self.song.tracks[index];
         track.mute = !track.mute;
         let muted = track.mute;
         ev.push(EditorEvent::SongChanged);
@@ -1341,10 +1386,10 @@ impl Editor {
         Ok(())
     }
 
-    fn toggle_solo(&mut self, ev: &mut Vec<EditorEvent>) -> Result<(), EditError> {
-        let name = self.current_track()?.name.clone();
+    fn toggle_solo(&mut self, index: usize, ev: &mut Vec<EditorEvent>) -> Result<(), EditError> {
+        let name = self.track_at(index)?.name.clone();
         self.commit(None);
-        let track = self.track_mut();
+        let track = &mut self.song.tracks[index];
         track.solo = !track.solo;
         let solo = track.solo;
         ev.push(EditorEvent::SongChanged);
@@ -1361,7 +1406,7 @@ impl Editor {
             self.track_mut().channel = channel;
             ev.push(EditorEvent::SongChanged);
         }
-        ev.push(EditorEvent::Status(format!("channel {} on {}", u32::from(channel) + 1, self.track_label())));
+        ev.push(EditorEvent::Status(format!("channel {} on {}", u32::from(channel) + 1, self.track_label(self.track_index))));
         Ok(())
     }
 
@@ -1381,7 +1426,7 @@ impl Editor {
             self.track_mut().instrument = instrument;
             ev.push(EditorEvent::SongChanged);
         }
-        ev.push(EditorEvent::Status(format!("{} on {}", instrument_status(&self.song.tracks[self.track_index]), self.track_label())));
+        ev.push(EditorEvent::Status(format!("{} on {}", instrument_status(&self.song.tracks[self.track_index]), self.track_label(self.track_index))));
         Ok(())
     }
 
@@ -1402,7 +1447,7 @@ impl Editor {
             track.channel = channel;
             ev.push(EditorEvent::SongChanged);
         }
-        ev.push(EditorEvent::Status(format!("{} on {}", instrument_status(&self.song.tracks[self.track_index]), self.track_label())));
+        ev.push(EditorEvent::Status(format!("{} on {}", instrument_status(&self.song.tracks[self.track_index]), self.track_label(self.track_index))));
         Ok(())
     }
 
@@ -1426,7 +1471,7 @@ impl Editor {
             }
             ev.push(EditorEvent::SongChanged);
         }
-        ev.push(EditorEvent::Status(format!("{} on {}", instrument_status(&self.song.tracks[self.track_index]), self.track_label())));
+        ev.push(EditorEvent::Status(format!("{} on {}", instrument_status(&self.song.tracks[self.track_index]), self.track_label(self.track_index))));
         Ok(())
     }
 
@@ -1442,7 +1487,7 @@ impl Editor {
             *preset = next;
             ev.push(EditorEvent::SongChanged);
         }
-        ev.push(EditorEvent::Status(format!("{} on {}", instrument_status(&self.song.tracks[self.track_index]), self.track_label())));
+        ev.push(EditorEvent::Status(format!("{} on {}", instrument_status(&self.song.tracks[self.track_index]), self.track_label(self.track_index))));
         Ok(())
     }
 

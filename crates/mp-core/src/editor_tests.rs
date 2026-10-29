@@ -840,6 +840,18 @@ fn undo_restores_song_cursor_and_selection() {
 }
 
 #[test]
+fn undo_leaves_the_header_width_alone() {
+    let mut e = Editor::new(song3());
+    let mut k = km();
+    drive_with(&mut e, &mut k, "x");
+    e.song.track_header_width = 333.0;
+    drive_with(&mut e, &mut k, "u");
+    assert_eq!(e.song.track_header_width, 333.0);
+    drive_with(&mut e, &mut k, "Shift+u");
+    assert_eq!(e.song.track_header_width, 333.0);
+}
+
+#[test]
 fn redo_reapplies() {
     let mut e = Editor::new(song3());
     let mut k = km();
@@ -1770,6 +1782,38 @@ fn mute_and_solo_toggle_and_undo() {
     assert_eq!(e.song, song3());
     assert_eq!(cmdline::parse("mute").unwrap(), Command::ToggleMute);
     assert_eq!(cmdline::parse("solo").unwrap(), Command::ToggleSolo);
+}
+
+#[test]
+fn header_mixer_edits_name_the_track_and_leave_the_shown_one_alone() {
+    let mut e = Editor::new(three_tracks());
+    let mut k = km();
+    assert_eq!(e.track_index, 0);
+    let ev = e.toggle_mute_of(2).unwrap();
+    assert!(e.song.tracks[2].mute);
+    assert!(has_song_changed(&ev));
+    assert_eq!(last_status(&ev), "muted Drums");
+    let ev = e.toggle_solo_of(1).unwrap();
+    assert!(e.song.tracks[1].solo);
+    assert_eq!(last_status(&ev), "solo Bass");
+    assert_eq!(e.track_index, 0, "the piano roll stays on the first track");
+
+    // a drag: many small steps, one undo entry, then a new drag is a new entry
+    for percent in [90, 80, 70] {
+        e.set_volume_of(1, percent).unwrap();
+    }
+    assert_eq!(e.song.tracks[1].volume, 0.7);
+    e.end_mix_gesture();
+    e.set_volume_of(1, 60).unwrap();
+    let ev = e.set_pan_of(2, -40).unwrap();
+    assert_eq!(e.song.tracks[2].pan, -0.4);
+    assert_eq!(last_status(&ev), "pan L40 on 3/3: Drums");
+    assert_eq!(e.undo.undo_depth(), 5, "mute, solo, first drag, second drag, pan");
+    drive_with(&mut e, &mut k, "u u");
+    assert_eq!(e.song.tracks[1].volume, 0.7);
+    assert_eq!(e.song.tracks[2].pan, 0.0);
+    assert!(e.set_volume_of(7, 50).is_err(), "no such track");
+    assert!(e.set_volume_of(1, 70).is_err(), "no change is an error, like a nudge");
 }
 
 #[test]
