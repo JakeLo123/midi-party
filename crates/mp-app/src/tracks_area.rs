@@ -186,15 +186,18 @@ fn note_rect(lane: Rect, x0: f32, x1: f32, pitch: u8, span: (u8, u8)) -> Rect {
 }
 
 /// Draws `text` left-aligned at `pos` (vertically centred), elided with `…` past `max_width`.
-fn draw_truncated(painter: &Painter, pos: Pos2, text: &str, max_width: f32, font: &FontId, color: Color32) {
+/// Returns the rect the text was drawn in, if any.
+fn draw_truncated(painter: &Painter, pos: Pos2, text: &str, max_width: f32, font: &FontId, color: Color32) -> Option<Rect> {
     if max_width <= 0.0 {
-        return;
+        return None;
     }
     let mut job = LayoutJob::simple_singleline(text.to_string(), font.clone(), color);
     job.wrap = TextWrapping::truncate_at_width(max_width);
     let galley = painter.layout_job(job);
     let top_left = Pos2::new(pos.x, pos.y - galley.size().y / 2.0);
+    let rect = Rect::from_min_size(top_left, galley.size());
     painter.galley(top_left, galley, color);
+    Some(rect)
 }
 
 /// A text field holding `text` and a caret. Text too long for it scrolls so the caret stays in view.
@@ -218,6 +221,7 @@ struct HeaderHot {
     solo: bool,
     slider: bool,
     knob: bool,
+    instrument: bool,
 }
 
 /// A one-letter mute or solo badge: filled with `on_color` when on, an outline when off.
@@ -434,12 +438,17 @@ impl TracksArea {
                 if slider_response.drag_stopped() || knob_response.drag_stopped() {
                     actions.push(TracksAction::EndMixGesture);
                 }
+                let hot_instrument = response.hover_pos().is_some_and(|pos| header.contains(pos) && header_instrument_hit(header, pos));
+                if hot_instrument {
+                    ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+                }
                 let painter = ui.painter();
                 let hot = HeaderHot {
                     mute: mute_response.hovered(),
                     solo: solo_response.hovered(),
                     slider: slider_response.hovered() || slider_response.dragged(),
                     knob: knob_response.hovered() || knob_response.dragged(),
+                    instrument: hot_instrument,
                 };
                 let editing = rename.and_then(|(track, text)| (track == i).then_some(text));
                 self.draw_header(painter, header, &controls, i, track, instrument, current, muted, hot, editing, theme, &header_font);
@@ -576,7 +585,11 @@ impl TracksArea {
             draw_truncated(&painter, Pos2::new(x + indent, controls.line1_y), &name, name_right - x - indent, &name_font, name_color);
         }
         let instrument_font = theme.font(font.size - 1.0);
-        draw_truncated(&painter, Pos2::new(x + indent, controls.line2_y), instrument, controls.slider.left() - HEADER_PAD - x - indent, &instrument_font, dim);
+        let instrument_color = if hot.instrument { theme.color("status_fg") } else { dim };
+        let instrument_rect = draw_truncated(&painter, Pos2::new(x + indent, controls.line2_y), instrument, controls.slider.left() - HEADER_PAD - x - indent, &instrument_font, instrument_color);
+        if let (true, Some(rect)) = (hot.instrument, instrument_rect) {
+            painter.hline(rect.x_range(), rect.bottom() + 0.5, Stroke::new(1.0, instrument_color));
+        }
 
         // The value of the control under the pointer, over the first line so it never hides the control itself.
         let value_label = if hot.slider {
