@@ -47,6 +47,8 @@ pub enum TracksAction {
     ScrubStart,
     /// The ruler drag ended: resume playback if the drag paused it.
     ScrubEnd,
+    /// Double-click on the name line of a row header: edit that track's name.
+    RenameTrack { track: usize },
     /// Click on the instrument line of a row header: choose that track's sound.
     PickInstrument { track: usize },
     /// The header column was dragged to this width; the song remembers it.
@@ -195,6 +197,20 @@ fn draw_truncated(painter: &Painter, pos: Pos2, text: &str, max_width: f32, font
     painter.galley(top_left, galley, color);
 }
 
+/// A text field holding `text` and a caret. Text too long for it scrolls so the caret stays in view.
+fn draw_name_field(painter: &Painter, field: Rect, text: &str, theme: &Theme, font: &FontId) {
+    if !field.is_positive() {
+        return;
+    }
+    painter.rect_filled(field, CornerRadius::same(2), theme.color("status_bg"));
+    painter.rect_stroke(field, CornerRadius::same(2), Stroke::new(1.0, theme.color("accent")), egui::StrokeKind::Inside);
+    let inner = field.shrink2(Vec2::new(3.0, 0.0));
+    let galley = painter.layout_no_wrap(format!("{text}▏"), font.clone(), theme.color("status_fg"));
+    let x = if galley.size().x <= inner.width() { inner.left() } else { inner.right() - galley.size().x };
+    let top_left = Pos2::new(x, field.center().y - galley.size().y / 2.0);
+    painter.with_clip_rect(inner).galley(top_left, galley, theme.color("status_fg"));
+}
+
 /// Which header controls the pointer is on, for highlighting.
 #[derive(Clone, Copy, Default)]
 struct HeaderHot {
@@ -306,6 +322,7 @@ impl TracksArea {
         playhead_tick: Option<f64>,
         roll_window: Option<(f64, f64)>,
         instrument_names: &[String],
+        rename: Option<(usize, &str)>,
         actions: &mut Vec<TracksAction>,
     ) {
         let rect = ui.available_rect_before_wrap();
@@ -424,7 +441,8 @@ impl TracksArea {
                     slider: slider_response.hovered() || slider_response.dragged(),
                     knob: knob_response.hovered() || knob_response.dragged(),
                 };
-                self.draw_header(painter, header, &controls, i, track, instrument, current, muted, hot, theme, &header_font);
+                let editing = rename.and_then(|(track, text)| (track == i).then_some(text));
+                self.draw_header(painter, header, &controls, i, track, instrument, current, muted, hot, editing, theme, &header_font);
                 self.draw_lane(painter, lane, i, track, current, muted, song, theme);
                 painter.hline(row.x_range(), row.bottom() - 0.5, Stroke::new(1.0, theme.color("panel_border")));
                 if response.clicked() {
@@ -437,6 +455,13 @@ impl TracksArea {
                             }
                         } else {
                             actions.push(TracksAction::JumpTo { track: i, tick: snap(self.tick_at_x(lane.left(), pos.x)) });
+                        }
+                    }
+                }
+                if response.double_clicked() {
+                    if let Some(pos) = response.interact_pointer_pos() {
+                        if pos.x < lane.left() && !header_instrument_hit(header, pos) {
+                            actions.push(TracksAction::RenameTrack { track: i });
                         }
                     }
                 }
@@ -518,8 +543,9 @@ impl TracksArea {
     /// Two lines: `N Name` with the mute and solo badges on the right, then the
     /// instrument with the volume slider and pan knob on the right. The names give
     /// way to the controls, so those stay usable however narrow the header is dragged.
+    /// `editing` is the text of a rename in progress, drawn as a field over the name.
     #[allow(clippy::too_many_arguments)]
-    fn draw_header(&self, painter: &Painter, header: Rect, controls: &HeaderControls, index: usize, track: &mp_core::Track, instrument: &str, current: bool, muted: bool, hot: HeaderHot, theme: &Theme, font: &FontId) {
+    fn draw_header(&self, painter: &Painter, header: Rect, controls: &HeaderControls, index: usize, track: &mp_core::Track, instrument: &str, current: bool, muted: bool, hot: HeaderHot, editing: Option<&str>, theme: &Theme, font: &FontId) {
         let painter = painter.with_clip_rect(header);
         if current {
             painter.rect_filled(header, 0.0, theme.color("black_key_row"));
@@ -541,8 +567,14 @@ impl TracksArea {
         let swatch = Rect::from_center_size(Pos2::new(x + 4.0, controls.line1_y), Vec2::splat(8.0));
         painter.rect_filled(swatch, CornerRadius::same(1), if muted { theme.color("note_ghost") } else { color });
         let indent = 14.0;
-        let name = format!("{} {}", index + 1, track.name);
-        draw_truncated(&painter, Pos2::new(x + indent, controls.line1_y), &name, controls.mute.left() - HEADER_PAD - x - indent, &name_font, name_color);
+        let name_right = controls.mute.left() - HEADER_PAD;
+        if let Some(text) = editing {
+            let field = Rect::from_x_y_ranges(Rangef::new(x + indent - 3.0, name_right), Rangef::new(controls.line1_y - 9.0, controls.line1_y + 9.0));
+            draw_name_field(&painter, field, text, theme, font);
+        } else {
+            let name = format!("{} {}", index + 1, track.name);
+            draw_truncated(&painter, Pos2::new(x + indent, controls.line1_y), &name, name_right - x - indent, &name_font, name_color);
+        }
         let instrument_font = theme.font(font.size - 1.0);
         draw_truncated(&painter, Pos2::new(x + indent, controls.line2_y), instrument, controls.slider.left() - HEADER_PAD - x - indent, &instrument_font, dim);
 

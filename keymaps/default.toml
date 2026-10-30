@@ -5,7 +5,8 @@
 # that far, add Shift to an Alt move to move that far. Cmd+a/c/x/v/z work as usual.
 # Cmd+e hides or shows the piano roll under the tracks area; Cmd+0 fits the whole
 # song in the tracks area again after zooming it. Ctrl+i picks the track's instrument
-# (drum kits included); Ctrl+. and Ctrl+, step through presets.
+# (drum kits included); Ctrl+. and Ctrl+, step through presets. Ctrl+r renames the
+# track (Enter keeps the new name, Escape cancels); so does double-clicking its name.
 #
 # One table: [normal].
 # Keys:   "Right", "Shift+Right", "n", "[" ... or a sequence "f t" (space separated).
@@ -147,6 +148,7 @@
 "Ctrl+."      = "next_preset"
 "Ctrl+,"      = "prev_preset"
 "Ctrl+i"      = "open_instrument_picker"
+"Ctrl+r"      = "edit_track_name"
 
 # --- controller lanes (sustain, pitch bend, mod wheel, volume, pan)
 "Shift+c"         = "cycle_lane"

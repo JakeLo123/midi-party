@@ -117,6 +117,7 @@ const SPECS: &[Spec] = &[
     Spec { name: "move_track_up", args: "", aliases: &["track up"] },
     Spec { name: "move_track_down", args: "", aliases: &["track down"] },
     Spec { name: "rename_track", args: "<name...>", aliases: &["rename", "track rename"] },
+    Spec { name: "edit_track_name", args: "", aliases: &[] },
     Spec { name: "set_track_volume", args: "<0-200%>", aliases: &["volume", "vol", "track volume"] },
     Spec { name: "nudge_track_volume", args: "<delta%>", aliases: &[] },
     Spec { name: "set_track_pan", args: "<-100..100 | L50 | C | R50>", aliases: &["pan", "track pan"] },
@@ -594,6 +595,7 @@ pub fn parse(line: &str) -> Result<Command, CmdLineError> {
             Command::SetDrumKit { kit }
         }
         "open_instrument_picker" => Command::OpenInstrumentPicker,
+        "edit_track_name" => Command::EditTrackName,
         "set_master_reverb" => {
             a.at_most(1)?;
             a.required(0, "percent")?;
@@ -742,6 +744,7 @@ pub fn to_line(cmd: &Command) -> String {
         | Command::ZoomToFit
         | Command::ToggleCheatSheet
         | Command::OpenInstrumentPicker
+        | Command::EditTrackName
         | Command::AddTrack
         | Command::RemoveTrack
         | Command::DuplicateTrack

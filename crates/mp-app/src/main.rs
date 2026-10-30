@@ -297,6 +297,8 @@ struct App {
     needs_scroll: bool,
     /// The `:` command line while it is open.
     cmdline: Option<String>,
+    /// A track name being edited in its header: the track index and the text so far.
+    track_rename: Option<(usize, String)>,
     file_path: Option<PathBuf>,
     dirty: bool,
     title: String,
@@ -391,6 +393,7 @@ impl App {
             picker: InstrumentPicker::default(),
             needs_scroll: true,
             cmdline: None,
+            track_rename: None,
             file_path,
             dirty: false,
             title: String::new(),
@@ -515,6 +518,7 @@ impl App {
         self.show_cheat_sheet = false;
         self.keymap_editor.open = false;
         self.picker.open = false;
+        self.track_rename = None;
     }
 
     fn open_keymap_editor(&mut self) {
@@ -551,6 +555,10 @@ impl App {
         }
         if self.cmdline.is_some() {
             self.handle_cmdline_chord(&text, ctx);
+            return;
+        }
+        if self.track_rename.is_some() {
+            self.handle_rename_chord(&text);
             return;
         }
         if self.handle_app_chord(&text, ctx) {
@@ -601,6 +609,7 @@ impl App {
                     }
                 }
                 EditorEvent::OpenInstrumentPicker => self.open_picker(self.editor.track_index),
+                EditorEvent::EditTrackName => self.start_rename(self.editor.track_index),
                 EditorEvent::View(ViewRequest::ZoomTime(factor)) => self.view.zoom_time(factor),
                 EditorEvent::View(ViewRequest::ZoomRows(factor)) => self.view.zoom_rows(factor),
                 EditorEvent::View(ViewRequest::TogglePianoRoll) => {
@@ -641,6 +650,7 @@ impl App {
     }
 
     fn apply_roll_action(&mut self, action: RollAction) {
+        self.finish_rename();
         if self.cmdline.is_some() || self.show_cheat_sheet || self.picker.open {
             return;
         }
@@ -714,6 +724,7 @@ impl App {
             self.dirty = true;
             return;
         }
+        self.finish_rename();
         if self.cmdline.is_some() || self.show_cheat_sheet || self.picker.open {
             return;
         }
@@ -754,9 +765,15 @@ impl App {
                 self.editor.focus = None;
                 self.open_picker(track);
             }
+            TracksAction::RenameTrack { track } if track < tracks => {
+                self.editor.show_track(track);
+                self.editor.focus = None;
+                self.start_rename(track);
+            }
             TracksAction::ShowTrack { .. }
             | TracksAction::JumpTo { .. }
             | TracksAction::PickInstrument { .. }
+            | TracksAction::RenameTrack { .. }
             | TracksAction::ResizeHeader { .. }
             | TracksAction::ToggleMute { .. }
             | TracksAction::ToggleSolo { .. }
@@ -811,6 +828,44 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    // ----- track rename -----
+
+    fn start_rename(&mut self, track: usize) {
+        let Some(name) = self.editor.song.tracks.get(track).map(|t| t.name.clone()) else { return };
+        self.close_overlays();
+        self.track_rename = Some((track, name));
+    }
+
+    /// Renames the track to the edited text, unless it is blank or unchanged.
+    fn finish_rename(&mut self) {
+        let Some((track, text)) = self.track_rename.take() else { return };
+        let name = text.trim();
+        let Some(current) = self.editor.song.tracks.get(track) else { return };
+        if name.is_empty() || name == current.name {
+            return;
+        }
+        self.editor.show_track(track);
+        self.execute(&Command::RenameTrack { name: name.to_string() });
+    }
+
+    fn handle_rename_chord(&mut self, text: &str) {
+        match text {
+            "Escape" => self.track_rename = None,
+            "Enter" => self.finish_rename(),
+            "Backspace" => {
+                if let Some((_, name)) = &mut self.track_rename {
+                    name.pop();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn rename_text(&mut self, typed: &str) {
+        let Some((_, name)) = &mut self.track_rename else { return };
+        name.extend(typed.chars().filter(|c| !c.is_control()));
     }
 
     fn cmdline_text(&mut self, typed: &str) {
@@ -1076,6 +1131,12 @@ impl App {
                 ui.label(text(format!(":{line}▏"), "status_fg"));
                 return;
             }
+            if self.track_rename.is_some() {
+                cell(ui, "", text("rename".into(), "status_mode"));
+                ui.add_space(8.0);
+                ui.label(text("Enter keeps the name, Escape cancels".into(), "status_dim"));
+                return;
+            }
             if e.box_anchor.is_some() {
                 cell(ui, "", text(format!("{} in box", e.selection.len()), "status_mode"));
             }
@@ -1164,6 +1225,8 @@ impl eframe::App for App {
                 self.picker.handle_text(&polled.text);
             } else if self.keymap_editor.open {
                 self.keymap_editor.handle_text(&polled.text);
+            } else if self.track_rename.is_some() {
+                self.rename_text(&polled.text);
             } else {
                 self.cmdline_text(&polled.text);
             }
@@ -1199,6 +1262,7 @@ impl eframe::App for App {
                 Err(_) => tracks.iter().map(instrument_name).collect(),
             }
         };
+        let rename = self.track_rename.as_ref().map(|(track, text)| (*track, text.as_str()));
         let mut track_actions = Vec::new();
         let mut actions = Vec::new();
         if self.show_roll {
@@ -1210,7 +1274,7 @@ impl eframe::App for App {
                 .default_size(220.0)
                 .size_range(egui::Rangef::new(80.0, (available - 160.0).max(80.0)))
                 .show(ui, |ui| {
-                    self.tracks.draw(ui, &self.editor, &self.theme, playhead, roll_window, &names, &mut track_actions);
+                    self.tracks.draw(ui, &self.editor, &self.theme, playhead, roll_window, &names, rename, &mut track_actions);
                 });
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE.fill(background))
@@ -1222,7 +1286,7 @@ impl eframe::App for App {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE.fill(status_bg))
                 .show(ui, |ui| {
-                    self.tracks.draw(ui, &self.editor, &self.theme, playhead, None, &names, &mut track_actions);
+                    self.tracks.draw(ui, &self.editor, &self.theme, playhead, None, &names, rename, &mut track_actions);
                 });
         }
         for action in track_actions {
