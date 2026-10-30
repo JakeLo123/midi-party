@@ -72,6 +72,8 @@ struct HeaderControls {
     solo: Rect,
     slider: Rect,
     knob: Rect,
+    /// The instrument line left of the slider, which opens the instrument picker.
+    instrument: Rect,
     line1_y: f32,
     line2_y: f32,
 }
@@ -83,7 +85,8 @@ fn header_controls(header: Rect) -> HeaderControls {
     let mute = solo.translate(Vec2::new(-(BADGE_SIZE.x + 3.0), 0.0));
     let knob = Rect::from_center_size(Pos2::new(header.right() - HEADER_PAD - PAN_KNOB_RADIUS, line2_y), Vec2::splat(PAN_KNOB_RADIUS * 2.0));
     let slider = Rect::from_center_size(Pos2::new(knob.left() - 8.0 - VOLUME_SLIDER_W / 2.0, line2_y), Vec2::new(VOLUME_SLIDER_W, 14.0));
-    HeaderControls { mute, solo, slider, knob, line1_y, line2_y }
+    let instrument = Rect::from_x_y_ranges(Rangef::new(header.left(), (slider.left() - 4.0).max(header.left())), Rangef::new(header.center().y, header.bottom()));
+    HeaderControls { mute, solo, slider, knob, instrument, line1_y, line2_y }
 }
 
 /// The volume percent a pointer at `x` on `slider` asks for: 0% at the left edge, 200% at the right.
@@ -110,11 +113,6 @@ fn clamp_header_width(wanted: f32, area_width: f32) -> f32 {
     } else {
         MIN_HEADER_W.min(max)
     }
-}
-
-/// Whether a click in a row header landed on its instrument line (the lower half).
-fn header_instrument_hit(header: Rect, pos: Pos2) -> bool {
-    pos.y >= header.center().y
 }
 
 pub struct TracksArea {
@@ -186,15 +184,18 @@ fn note_rect(lane: Rect, x0: f32, x1: f32, pitch: u8, span: (u8, u8)) -> Rect {
 }
 
 /// Draws `text` left-aligned at `pos` (vertically centred), elided with `…` past `max_width`.
-fn draw_truncated(painter: &Painter, pos: Pos2, text: &str, max_width: f32, font: &FontId, color: Color32) {
+/// Returns the rect the text was drawn in, if any.
+fn draw_truncated(painter: &Painter, pos: Pos2, text: &str, max_width: f32, font: &FontId, color: Color32) -> Option<Rect> {
     if max_width <= 0.0 {
-        return;
+        return None;
     }
     let mut job = LayoutJob::simple_singleline(text.to_string(), font.clone(), color);
     job.wrap = TextWrapping::truncate_at_width(max_width);
     let galley = painter.layout_job(job);
     let top_left = Pos2::new(pos.x, pos.y - galley.size().y / 2.0);
+    let rect = Rect::from_min_size(top_left, galley.size());
     painter.galley(top_left, galley, color);
+    Some(rect)
 }
 
 /// A text field holding `text` and a caret. Text too long for it scrolls so the caret stays in view.
@@ -218,6 +219,7 @@ struct HeaderHot {
     solo: bool,
     slider: bool,
     knob: bool,
+    instrument: bool,
 }
 
 /// A one-letter mute or solo badge: filled with `on_color` when on, an outline when off.
@@ -405,6 +407,14 @@ impl TracksArea {
                 let solo_response = ui.interact(controls.solo, row_id.with("solo"), Sense::click());
                 let slider_response = ui.interact(controls.slider, row_id.with("volume"), Sense::click_and_drag());
                 let knob_response = ui.interact(controls.knob, row_id.with("pan"), Sense::click_and_drag());
+                let instrument_response = ui.interact(controls.instrument, row_id.with("instrument"), Sense::click());
+                instrument_response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), format!("Instrument for {}: {instrument}", track.name)));
+                if instrument_response.hovered() {
+                    ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+                }
+                if instrument_response.clicked() {
+                    actions.push(TracksAction::PickInstrument { track: i });
+                }
                 let volume_percent = (track.volume * 100.0).round() as i32;
                 let pan_value = (track.pan * 100.0).round() as i32;
                 if mute_response.clicked() {
@@ -440,6 +450,7 @@ impl TracksArea {
                     solo: solo_response.hovered(),
                     slider: slider_response.hovered() || slider_response.dragged(),
                     knob: knob_response.hovered() || knob_response.dragged(),
+                    instrument: instrument_response.hovered() || instrument_response.has_focus(),
                 };
                 let editing = rename.and_then(|(track, text)| (track == i).then_some(text));
                 self.draw_header(painter, header, &controls, i, track, instrument, current, muted, hot, editing, theme, &header_font);
@@ -448,11 +459,7 @@ impl TracksArea {
                 if response.clicked() {
                     if let Some(pos) = response.interact_pointer_pos() {
                         if pos.x < lane.left() {
-                            if header_instrument_hit(header, pos) {
-                                actions.push(TracksAction::PickInstrument { track: i });
-                            } else {
-                                actions.push(TracksAction::ShowTrack { track: i });
-                            }
+                            actions.push(TracksAction::ShowTrack { track: i });
                         } else {
                             actions.push(TracksAction::JumpTo { track: i, tick: snap(self.tick_at_x(lane.left(), pos.x)) });
                         }
@@ -460,7 +467,7 @@ impl TracksArea {
                 }
                 if response.double_clicked() {
                     if let Some(pos) = response.interact_pointer_pos() {
-                        if pos.x < lane.left() && !header_instrument_hit(header, pos) {
+                        if pos.x < lane.left() {
                             actions.push(TracksAction::RenameTrack { track: i });
                         }
                     }
@@ -540,7 +547,7 @@ impl TracksArea {
         painter.hline(ruler.x_range(), ruler.bottom() - 0.5, Stroke::new(1.0, theme.color("panel_border")));
     }
 
-    /// Two lines: `N Name` with the mute and solo badges on the right, then the
+    /// Two lines: the track name with the mute and solo badges on the right, then the
     /// instrument with the volume slider and pan knob on the right. The names give
     /// way to the controls, so those stay usable however narrow the header is dragged.
     /// `editing` is the text of a rename in progress, drawn as a field over the name.
@@ -572,11 +579,14 @@ impl TracksArea {
             let field = Rect::from_x_y_ranges(Rangef::new(x + indent - 3.0, name_right), Rangef::new(controls.line1_y - 9.0, controls.line1_y + 9.0));
             draw_name_field(&painter, field, text, theme, font);
         } else {
-            let name = format!("{} {}", index + 1, track.name);
-            draw_truncated(&painter, Pos2::new(x + indent, controls.line1_y), &name, name_right - x - indent, &name_font, name_color);
+            draw_truncated(&painter, Pos2::new(x + indent, controls.line1_y), &track.name, name_right - x - indent, &name_font, name_color);
         }
         let instrument_font = theme.font(font.size - 1.0);
-        draw_truncated(&painter, Pos2::new(x + indent, controls.line2_y), instrument, controls.slider.left() - HEADER_PAD - x - indent, &instrument_font, dim);
+        let instrument_color = if hot.instrument { theme.color("status_fg") } else { dim };
+        let instrument_rect = draw_truncated(&painter, Pos2::new(x + indent, controls.line2_y), instrument, controls.slider.left() - HEADER_PAD - x - indent, &instrument_font, instrument_color);
+        if let (true, Some(rect)) = (hot.instrument, instrument_rect) {
+            painter.hline(rect.x_range(), rect.bottom() + 0.5, Stroke::new(1.0, instrument_color));
+        }
 
         // The value of the control under the pointer, over the first line so it never hides the control itself.
         let value_label = if hot.slider {
@@ -634,10 +644,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_lower_half_of_a_header_is_its_instrument_line() {
+    fn the_instrument_button_fills_the_lower_half_left_of_the_slider() {
         let header = Rect::from_min_size(Pos2::new(0.0, 100.0), Vec2::new(190.0, ROW_H));
-        assert!(!header_instrument_hit(header, Pos2::new(10.0, 105.0)));
-        assert!(header_instrument_hit(header, Pos2::new(10.0, 130.0)));
+        let c = header_controls(header);
+        assert!(!c.instrument.contains(Pos2::new(10.0, 105.0)));
+        assert!(c.instrument.contains(Pos2::new(10.0, 130.0)));
+        assert!(c.instrument.right() < c.slider.left());
     }
     use mp_core::{Note, NoteId, Track};
 
