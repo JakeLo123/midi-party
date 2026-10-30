@@ -72,6 +72,8 @@ struct HeaderControls {
     solo: Rect,
     slider: Rect,
     knob: Rect,
+    /// The instrument line left of the slider, which opens the instrument picker.
+    instrument: Rect,
     line1_y: f32,
     line2_y: f32,
 }
@@ -83,7 +85,8 @@ fn header_controls(header: Rect) -> HeaderControls {
     let mute = solo.translate(Vec2::new(-(BADGE_SIZE.x + 3.0), 0.0));
     let knob = Rect::from_center_size(Pos2::new(header.right() - HEADER_PAD - PAN_KNOB_RADIUS, line2_y), Vec2::splat(PAN_KNOB_RADIUS * 2.0));
     let slider = Rect::from_center_size(Pos2::new(knob.left() - 8.0 - VOLUME_SLIDER_W / 2.0, line2_y), Vec2::new(VOLUME_SLIDER_W, 14.0));
-    HeaderControls { mute, solo, slider, knob, line1_y, line2_y }
+    let instrument = Rect::from_x_y_ranges(Rangef::new(header.left(), (slider.left() - 4.0).max(header.left())), Rangef::new(header.center().y, header.bottom()));
+    HeaderControls { mute, solo, slider, knob, instrument, line1_y, line2_y }
 }
 
 /// The volume percent a pointer at `x` on `slider` asks for: 0% at the left edge, 200% at the right.
@@ -110,11 +113,6 @@ fn clamp_header_width(wanted: f32, area_width: f32) -> f32 {
     } else {
         MIN_HEADER_W.min(max)
     }
-}
-
-/// Whether a click in a row header landed on its instrument line (the lower half).
-fn header_instrument_hit(header: Rect, pos: Pos2) -> bool {
-    pos.y >= header.center().y
 }
 
 pub struct TracksArea {
@@ -409,6 +407,14 @@ impl TracksArea {
                 let solo_response = ui.interact(controls.solo, row_id.with("solo"), Sense::click());
                 let slider_response = ui.interact(controls.slider, row_id.with("volume"), Sense::click_and_drag());
                 let knob_response = ui.interact(controls.knob, row_id.with("pan"), Sense::click_and_drag());
+                let instrument_response = ui.interact(controls.instrument, row_id.with("instrument"), Sense::click());
+                instrument_response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), format!("Instrument for {}: {instrument}", track.name)));
+                if instrument_response.hovered() {
+                    ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+                }
+                if instrument_response.clicked() {
+                    actions.push(TracksAction::PickInstrument { track: i });
+                }
                 let volume_percent = (track.volume * 100.0).round() as i32;
                 let pan_value = (track.pan * 100.0).round() as i32;
                 if mute_response.clicked() {
@@ -438,17 +444,13 @@ impl TracksArea {
                 if slider_response.drag_stopped() || knob_response.drag_stopped() {
                     actions.push(TracksAction::EndMixGesture);
                 }
-                let hot_instrument = response.hover_pos().is_some_and(|pos| header.contains(pos) && header_instrument_hit(header, pos));
-                if hot_instrument {
-                    ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
-                }
                 let painter = ui.painter();
                 let hot = HeaderHot {
                     mute: mute_response.hovered(),
                     solo: solo_response.hovered(),
                     slider: slider_response.hovered() || slider_response.dragged(),
                     knob: knob_response.hovered() || knob_response.dragged(),
-                    instrument: hot_instrument,
+                    instrument: instrument_response.hovered() || instrument_response.has_focus(),
                 };
                 let editing = rename.and_then(|(track, text)| (track == i).then_some(text));
                 self.draw_header(painter, header, &controls, i, track, instrument, current, muted, hot, editing, theme, &header_font);
@@ -457,11 +459,7 @@ impl TracksArea {
                 if response.clicked() {
                     if let Some(pos) = response.interact_pointer_pos() {
                         if pos.x < lane.left() {
-                            if header_instrument_hit(header, pos) {
-                                actions.push(TracksAction::PickInstrument { track: i });
-                            } else {
-                                actions.push(TracksAction::ShowTrack { track: i });
-                            }
+                            actions.push(TracksAction::ShowTrack { track: i });
                         } else {
                             actions.push(TracksAction::JumpTo { track: i, tick: snap(self.tick_at_x(lane.left(), pos.x)) });
                         }
@@ -469,7 +467,7 @@ impl TracksArea {
                 }
                 if response.double_clicked() {
                     if let Some(pos) = response.interact_pointer_pos() {
-                        if pos.x < lane.left() && !header_instrument_hit(header, pos) {
+                        if pos.x < lane.left() {
                             actions.push(TracksAction::RenameTrack { track: i });
                         }
                     }
@@ -647,10 +645,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_lower_half_of_a_header_is_its_instrument_line() {
+    fn the_instrument_button_fills_the_lower_half_left_of_the_slider() {
         let header = Rect::from_min_size(Pos2::new(0.0, 100.0), Vec2::new(190.0, ROW_H));
-        assert!(!header_instrument_hit(header, Pos2::new(10.0, 105.0)));
-        assert!(header_instrument_hit(header, Pos2::new(10.0, 130.0)));
+        let c = header_controls(header);
+        assert!(!c.instrument.contains(Pos2::new(10.0, 105.0)));
+        assert!(c.instrument.contains(Pos2::new(10.0, 130.0)));
+        assert!(c.instrument.right() < c.slider.left());
     }
     use mp_core::{Note, NoteId, Track};
 
