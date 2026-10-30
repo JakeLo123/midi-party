@@ -547,7 +547,7 @@ impl TracksArea {
         painter.hline(ruler.x_range(), ruler.bottom() - 0.5, Stroke::new(1.0, theme.color("panel_border")));
     }
 
-    /// Two lines: `N Name` with the mute and solo badges on the right, then the
+    /// Two lines: the track name with the mute and solo badges on the right, then the
     /// instrument with the volume slider and pan knob on the right. The names give
     /// way to the controls, so those stay usable however narrow the header is dragged.
     /// `editing` is the text of a rename in progress, drawn as a field over the name.
@@ -579,8 +579,7 @@ impl TracksArea {
             let field = Rect::from_x_y_ranges(Rangef::new(x + indent - 3.0, name_right), Rangef::new(controls.line1_y - 9.0, controls.line1_y + 9.0));
             draw_name_field(&painter, field, text, theme, font);
         } else {
-            let name = format!("{} {}", index + 1, track.name);
-            draw_truncated(&painter, Pos2::new(x + indent, controls.line1_y), &name, name_right - x - indent, &name_font, name_color);
+            draw_truncated(&painter, Pos2::new(x + indent, controls.line1_y), &track.name, name_right - x - indent, &name_font, name_color);
         }
         let instrument_font = theme.font(font.size - 1.0);
         let instrument_color = if hot.instrument { theme.color("status_fg") } else { dim };
