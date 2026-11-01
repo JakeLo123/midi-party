@@ -8,10 +8,14 @@
 mod bridge;
 mod cheat_sheet;
 mod config;
+mod dialogs;
 mod input;
 mod instrument_picker;
 mod keymap_editor;
+#[cfg(target_os = "macos")]
+mod menu;
 mod piano_roll;
+mod recent;
 mod theme;
 mod tracks_area;
 
@@ -33,7 +37,8 @@ use rustysynth::SoundFont;
 use crate::bridge::Audio;
 use mp_core::instrument_name;
 use crate::config::{ConfigEvent, ConfigWatcher};
-use crate::input::{Chord, InputState, KeyRepeat};
+use crate::dialogs::Unsaved;
+use crate::input::{InputState, KeyRepeat};
 use crate::instrument_picker::{Entry, InstrumentPicker, Outcome};
 use crate::keymap_editor::KeymapEditor;
 use crate::piano_roll::{RollAction, RollView};
@@ -301,6 +306,11 @@ struct App {
     track_rename: Option<(usize, String)>,
     file_path: Option<PathBuf>,
     dirty: bool,
+    /// Set once unsaved changes have been saved or knowingly discarded, so the window may close.
+    allow_close: bool,
+    recent: Vec<PathBuf>,
+    #[cfg(target_os = "macos")]
+    menu: menu::MacMenu,
     title: String,
     last_autosave: Instant,
     export_rx: Option<Receiver<Result<String, String>>>,
@@ -375,6 +385,10 @@ impl App {
             }
         }
 
+        let recent = recent::load(&config_dir);
+        #[cfg(target_os = "macos")]
+        let menu = menu::MacMenu::install(cc.egui_ctx.clone(), &keymap, &recent, &app_icon());
+
         let mut app = Self {
             editor,
             keymap,
@@ -396,6 +410,10 @@ impl App {
             track_rename: None,
             file_path,
             dirty: false,
+            allow_close: false,
+            recent,
+            #[cfg(target_os = "macos")]
+            menu,
             title: String::new(),
             last_autosave: Instant::now(),
             export_rx: None,
@@ -505,12 +523,124 @@ impl App {
     fn handle_app_chord(&mut self, text: &str, ctx: &egui::Context) -> bool {
         match text {
             "Escape" if self.show_cheat_sheet => self.show_cheat_sheet = false,
-            "Cmd+s" => self.run_command("w"),
+            "Cmd+s" => {
+                self.save();
+            }
+            "Shift+Cmd+s" => {
+                self.save_as();
+            }
+            "Cmd+o" => self.open_with_dialog(),
+            "Cmd+n" => self.new_song_with_prompt(),
+            "Cmd+," => dialogs::settings_placeholder(),
             "Cmd+k" => self.open_keymap_editor(),
             "Cmd+q" => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             _ => return false,
         }
         true
+    }
+
+    fn handle_menu_clicks(&mut self, ctx: &egui::Context) {
+        #[cfg(target_os = "macos")]
+        for click in self.menu.poll() {
+            match click {
+                menu::MenuClick::Key(text) => self.handle_key(&text, ctx),
+                menu::MenuClick::Run(id) => self.run_menu_item(id, ctx),
+                menu::MenuClick::OpenRecent(path) => {
+                    if self.confirm_discard() {
+                        self.open(&path);
+                    }
+                }
+                menu::MenuClick::ClearRecent => recent::clear(&self.config_dir, &mut self.recent),
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = ctx;
+    }
+
+    /// A menu item that has no shortcut right now: closes whatever overlay is up and runs it.
+    #[cfg(target_os = "macos")]
+    fn run_menu_item(&mut self, id: &str, ctx: &egui::Context) {
+        self.close_overlays();
+        self.cmdline = None;
+        match id {
+            "settings" => dialogs::settings_placeholder(),
+            "quit" => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            "new" => self.new_song_with_prompt(),
+            "open" => self.open_with_dialog(),
+            "save" => {
+                self.save();
+            }
+            "save_as" => {
+                self.save_as();
+            }
+            "export" => self.export_with_dialog(),
+            "cheat_sheet" => self.show_cheat_sheet(),
+            "keymap_editor" => self.open_keymap_editor(),
+            command => self.run_command(command),
+        }
+    }
+
+    /// Saves to the current file, asking for a name if there is none. True if the song was saved.
+    fn save(&mut self) -> bool {
+        match self.file_path.clone() {
+            Some(path) => {
+                self.save_to(&path);
+                !self.dirty
+            }
+            None => self.save_as(),
+        }
+    }
+
+    fn save_as(&mut self) -> bool {
+        match dialogs::save_song_as(self.file_path.as_deref()) {
+            Some(path) => {
+                self.save_to(&path);
+                !self.dirty
+            }
+            None => {
+                if !cfg!(target_os = "macos") {
+                    self.status = "no file name: use :w <path.ron>".into();
+                }
+                false
+            }
+        }
+    }
+
+    /// Asks what to do with unsaved changes. True if it is fine to replace or close the song.
+    fn confirm_discard(&mut self) -> bool {
+        if !self.dirty {
+            return true;
+        }
+        match dialogs::ask_unsaved(self.file_name()) {
+            Unsaved::Save => self.save(),
+            Unsaved::Discard => true,
+            Unsaved::Cancel => false,
+        }
+    }
+
+    fn open_with_dialog(&mut self) {
+        if !self.confirm_discard() {
+            return;
+        }
+        if let Some(path) = dialogs::pick_song(self.file_path.as_deref()) {
+            self.open(&path);
+        }
+    }
+
+    fn new_song_with_prompt(&mut self) {
+        if self.confirm_discard() {
+            self.run_command("new!");
+        }
+    }
+
+    fn export_with_dialog(&mut self) {
+        if let Some(path) = dialogs::export_to(self.file_path.as_deref()) {
+            self.export(path);
+        }
+    }
+
+    fn file_name(&self) -> &str {
+        self.file_path.as_ref().and_then(|p| p.file_name()).and_then(|n| n.to_str()).unwrap_or("untitled")
     }
 
     /// Only one overlay is up at a time, so keys always go to the one on screen.
@@ -531,10 +661,18 @@ impl App {
         self.show_cheat_sheet = true;
     }
 
-    fn handle_chord(&mut self, chord: Chord, ctx: &egui::Context) {
-        let text = chord.to_string();
+    /// Handles one keypress (or a menu click standing in for one), written in keymap syntax.
+    fn handle_key(&mut self, text: &str, ctx: &egui::Context) {
+        let typing = self.picker.open || self.cmdline.is_some() || self.track_rename.is_some();
+        if typing && APP_CHORDS.contains(&text) {
+            self.finish_rename();
+            self.close_overlays();
+            self.cmdline = None;
+            self.handle_app_chord(text, ctx);
+            return;
+        }
         if self.picker.open {
-            match self.picker.handle_chord(&text) {
+            match self.picker.handle_chord(text) {
                 Outcome::Nothing => {}
                 Outcome::Audition(entry) => self.preview_entry(&entry),
                 Outcome::Pick(entry) => {
@@ -548,20 +686,20 @@ impl App {
         }
         if self.keymap_editor.open {
             let path = self.config_dir.join("keymap.toml");
-            if let Some(status) = self.keymap_editor.handle_chord(&text, &path) {
+            if let Some(status) = self.keymap_editor.handle_chord(text, &path) {
                 self.status = status;
             }
             return;
         }
         if self.cmdline.is_some() {
-            self.handle_cmdline_chord(&text, ctx);
+            self.handle_cmdline_chord(text, ctx);
             return;
         }
         if self.track_rename.is_some() {
-            self.handle_rename_chord(&text);
+            self.handle_rename_chord(text);
             return;
         }
-        if self.handle_app_chord(&text, ctx) {
+        if self.handle_app_chord(text, ctx) {
             return;
         }
         let chord: KeyChord = match text.parse() {
@@ -904,10 +1042,15 @@ impl App {
             Ok(()) => {
                 self.dirty = false;
                 self.file_path = Some(path.to_path_buf());
+                self.remember_recent(path);
                 self.status = format!("wrote {}", path.file_name().and_then(|n| n.to_str()).unwrap_or("file"));
             }
             Err(e) => self.status = format!("save failed: {e}"),
         }
+    }
+
+    fn remember_recent(&mut self, path: &Path) {
+        recent::remember(&self.config_dir, &mut self.recent, path);
     }
 
     fn open(&mut self, path: &Path) {
@@ -924,6 +1067,7 @@ impl App {
                 if let Ok(audio) = &mut self.audio {
                     audio.sync_song(&self.editor.song);
                 }
+                self.remember_recent(path);
                 self.status = format!("opened {}", path.display());
             }
             Err(e) => self.status = format!("{}: {e}", path.display()),
@@ -954,6 +1098,7 @@ impl App {
                 if self.dirty && !force {
                     self.status = "unsaved changes: :w to save or :q! to discard".into();
                 } else {
+                    self.allow_close = true;
                     self.status = "quit".into();
                 }
             }
@@ -983,13 +1128,7 @@ impl App {
             }
             "export" => match arg_path() {
                 None => self.status = "usage: :export <file.wav|file.mp3|file.mid>".into(),
-                Some(path) if matches!(extension(&path).as_str(), "mid" | "midi") => {
-                    match midi_file::save(&self.editor.song, &path) {
-                        Ok(()) => self.status = format!("exported {}", path.display()),
-                        Err(e) => self.status = format!("export failed: {e}"),
-                    }
-                }
-                Some(path) => self.start_export(path),
+                Some(path) => self.export(path),
             },
             "bpm" | "tempo" => match rest.first().and_then(|s| s.parse::<f64>().ok()) {
                 Some(bpm) if (20.0..=400.0).contains(&bpm) => {
@@ -1033,6 +1172,17 @@ impl App {
         }
     }
 
+    fn export(&mut self, path: PathBuf) {
+        if matches!(extension(&path).as_str(), "mid" | "midi") {
+            match midi_file::save(&self.editor.song, &path) {
+                Ok(()) => self.status = format!("exported {}", path.display()),
+                Err(e) => self.status = format!("export failed: {e}"),
+            }
+        } else {
+            self.start_export(path);
+        }
+    }
+
     fn start_export(&mut self, path: PathBuf) {
         if self.export_rx.is_some() {
             self.status = "an export is already running".into();
@@ -1062,6 +1212,18 @@ impl App {
         }
     }
 
+    /// Holds a close request (window button, Cmd+q, Quit) until unsaved changes are dealt with.
+    fn guard_close(&mut self, ctx: &egui::Context) {
+        if !ctx.input(|i| i.viewport().close_requested()) || self.allow_close || self.smoke_seconds.is_some() {
+            return;
+        }
+        if self.confirm_discard() {
+            self.allow_close = true;
+        } else {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
+    }
+
     fn autosave(&mut self, now: Instant) {
         if self.dirty && now.duration_since(self.last_autosave) >= AUTOSAVE_INTERVAL {
             self.last_autosave = now;
@@ -1070,13 +1232,7 @@ impl App {
     }
 
     fn update_title(&mut self, ctx: &egui::Context) {
-        let name = self
-            .file_path
-            .as_ref()
-            .and_then(|p| p.file_name())
-            .and_then(|n| n.to_str())
-            .unwrap_or("untitled");
-        let title = format!("{name}{} — MIDI Party", if self.dirty { " •" } else { "" });
+        let title = format!("{}{} — MIDI Party", self.file_name(), if self.dirty { " •" } else { "" });
         if title != self.title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.title = title;
@@ -1095,6 +1251,8 @@ impl App {
                 ConfigEvent::KeymapChanged => {
                     let (keymap, error) = load_keymap(&self.config_dir.join("keymap.toml"));
                     self.keymap = keymap;
+                    #[cfg(target_os = "macos")]
+                    self.menu.set_keymap(&self.keymap);
                     self.status = error.unwrap_or_else(|| "keymap reloaded".into());
                 }
             }
@@ -1181,6 +1339,9 @@ impl App {
     }
 }
 
+/// File and app shortcuts that work even while the command line, a rename or the picker has the keyboard.
+const APP_CHORDS: &[&str] = &["Cmd+s", "Shift+Cmd+s", "Cmd+o", "Cmd+n", "Cmd+,", "Cmd+k", "Cmd+q"];
+
 /// Command-line commands the app handles itself (name, usage).
 const APP_COMMANDS: &[(&str, &str)] = &[
     ("w", "w [file.ron|file.mid]"),
@@ -1218,7 +1379,7 @@ impl eframe::App for App {
         }
         let polled = self.input.poll(&ctx, now);
         for chord in polled.chords {
-            self.handle_chord(chord, &ctx);
+            self.handle_key(&chord.to_string(), &ctx);
         }
         if !polled.text.is_empty() {
             if self.picker.open {
@@ -1231,7 +1392,14 @@ impl eframe::App for App {
                 self.cmdline_text(&polled.text);
             }
         }
+        self.handle_menu_clicks(&ctx);
         self.handle_config_events(&ctx);
+        self.guard_close(&ctx);
+        #[cfg(target_os = "macos")]
+        {
+            self.menu.set_recent(&self.recent);
+            self.menu.set_piano_roll_shown(self.show_roll);
+        }
         self.poll_export();
         self.autosave(now);
         self.update_title(&ctx);
