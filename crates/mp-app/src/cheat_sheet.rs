@@ -10,7 +10,11 @@ use crate::theme::Theme;
 
 /// Bindings handled by the app itself rather than the editor's keymap.
 pub const APP_BINDINGS: &[(&str, &str)] = &[
+    ("Cmd+n", "new song"),
+    ("Cmd+o", "open a song or MIDI file"),
     ("Cmd+s", "save (:w)"),
+    ("Shift+Cmd+s", "save as"),
+    ("Cmd+k", "keymap editor"),
     ("Cmd+q", "quit"),
     (":", "command line (Tab completes; :help lists commands)"),
 ];

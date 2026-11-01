@@ -25,6 +25,8 @@ rtrb = "0.3"
 # Anonymous Pro's embedded bitmap strikes as white color glyphs instead of using the outlines.
 eframe = { version = "0.37", default-features = false, features = ["accesskit", "clipboard", "default_fonts", "links", "wayland", "web_screen_reader", "wgpu", "x11"] }
 egui = "0.37"
+muda = "0.21"
+rfd = "0.17"
 notify = "8"
 dirs = "6"
 clap = { version = "4", features = ["derive"] }
