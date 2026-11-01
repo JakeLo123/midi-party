@@ -25,8 +25,8 @@ pub mod sequencer;
 pub mod stream;
 pub mod synth;
 
-pub use convert::render_song_from;
+pub use convert::{loop_seconds, render_song_from};
 pub use engine::{create_engine, AudioCmd, Engine, EngineHandle, Transport};
 pub use error::AudioError;
-pub use render_song::{EventKind, RenderSong, RenderTrack, TimedEvent, TrackMix, DRUM_CHANNEL, MAX_TRACKS};
+pub use render_song::{BeatSegment, EventKind, RenderSong, RenderTrack, TimedEvent, TrackMix, DRUM_CHANNEL, MAX_TRACKS};
 pub use synth::{has_drum_kit, load_soundfont, SoundFontSynth, Synth};

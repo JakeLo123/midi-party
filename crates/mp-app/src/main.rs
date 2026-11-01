@@ -18,6 +18,7 @@ mod piano_roll;
 mod recent;
 mod theme;
 mod tracks_area;
+mod transport_bar;
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver};
@@ -30,7 +31,7 @@ use mp_audio::render::{render_song, write_audio_file, RenderOptions};
 use mp_audio::{render_song_from, SoundFontSynth, Synth};
 use mp_core::{
     cmdline, default_keymap, feed_one, midi_file, pitch_name, project, try_drive_with, Command, Cursor, DriveError,
-    Editor, EditorEvent, KeyChord, Keymap, Song, Tick, TransportRequest, ViewRequest, DEFAULT_KEYMAP_TOML,
+    Editor, EditorEvent, KeyChord, Keymap, LoopRegion, Song, Tick, TransportRequest, ViewRequest, DEFAULT_KEYMAP_TOML,
 };
 use rustysynth::SoundFont;
 
@@ -44,9 +45,16 @@ use crate::keymap_editor::KeymapEditor;
 use crate::piano_roll::{RollAction, RollView};
 use crate::theme::Theme;
 use crate::tracks_area::{TracksAction, TracksArea};
+use crate::transport_bar::{TransportAction, TransportBar, TransportView, ValueField, MAX_BPM, MIN_BPM};
 
 const AUTOSAVE_INTERVAL: Duration = Duration::from_secs(30);
 const EXPORT_SAMPLE_RATE: u32 = 44_100;
+/// A pause this long between taps starts a new tap-tempo count.
+const TAP_RESET: Duration = Duration::from_secs(2);
+/// Tap tempo averages over this many of the latest taps.
+const TAPS_KEPT: usize = 6;
+/// The loop a song gets when the loop is switched on before one has been marked.
+const DEFAULT_LOOP_BARS: u32 = 4;
 
 #[derive(Parser)]
 #[command(name = "midi-party", version)]
@@ -322,6 +330,14 @@ struct App {
     playhead: Tick,
     /// Set while a ruler drag holds the playhead; true if playback should resume on release.
     scrub: Option<bool>,
+    transport: TransportBar,
+    metronome: bool,
+    /// Recent tap-tempo taps, oldest first.
+    taps: Vec<Instant>,
+    /// Where the tempo change being dragged in the transport bar sits.
+    tempo_drag_at: Option<Tick>,
+    /// A tempo or time signature being typed in the transport bar, and the text so far.
+    value_entry: Option<(ValueField, String)>,
 }
 
 impl App {
@@ -422,6 +438,11 @@ impl App {
             screenshot: args.screenshot,
             playhead: Tick::ZERO,
             scrub: None,
+            transport: TransportBar::default(),
+            metronome: false,
+            taps: Vec::new(),
+            tempo_drag_at: None,
+            value_entry: None,
         };
         app.apply_events(startup_events);
         for command in &args.commands {
@@ -508,7 +529,135 @@ impl App {
                 let to = song.meter_map.step_bars(song.ppq, self.playhead, bars);
                 self.seek_playhead(to);
             }
+            TransportRequest::ToggleLoop => self.toggle_loop(),
+            TransportRequest::ToggleMetronome => self.toggle_metronome(),
+            TransportRequest::TapTempo => self.tap_tempo(Instant::now()),
         }
+    }
+
+    fn apply_transport_action(&mut self, action: TransportAction) {
+        self.finish_rename();
+        if !matches!(action, TransportAction::Edit(_)) {
+            self.finish_entry();
+        }
+        match action {
+            TransportAction::ToStart => self.apply_transport(TransportRequest::Seek { to: Tick::ZERO }),
+            TransportAction::TogglePlay => self.apply_transport(TransportRequest::Toggle),
+            TransportAction::ToggleLoop => self.toggle_loop(),
+            TransportAction::ToggleMetronome => self.toggle_metronome(),
+            TransportAction::TapTempo => self.tap_tempo(Instant::now()),
+            TransportAction::DragTempo { bpm } => {
+                let song = &self.editor.song;
+                let at = *self.tempo_drag_at.get_or_insert_with(|| song.tempo_map.change_at_or_before(self.playhead));
+                self.set_tempo_at(at, bpm, Some("tempo_drag"));
+            }
+            TransportAction::EndTempoDrag => {
+                self.tempo_drag_at = None;
+                self.editor.undo.break_coalescing();
+            }
+            TransportAction::SetMeter { numerator, denominator } => self.set_meter_at_playhead(numerator, denominator),
+            TransportAction::Edit(field) => self.start_entry(field),
+        }
+    }
+
+    /// Sets the tempo of the change at `at`, merging into one undo step with the
+    /// edits before it that share `coalesce`.
+    fn set_tempo_at(&mut self, at: Tick, bpm: f64, coalesce: Option<&str>) {
+        let label = transport_bar::bpm_label(bpm);
+        self.edit_song_merging(format!("tempo {label} bpm"), coalesce, |song| song.tempo_map.set_tempo_at(at, bpm).map_err(|e| e.to_string()));
+        self.keep_playback_in_place();
+    }
+
+    fn set_meter_at_playhead(&mut self, numerator: u8, denominator: u8) {
+        let at = self.editor.song.meter_map.change_at_or_before(self.playhead);
+        self.edit_song(format!("time signature {numerator}/{denominator}"), |song| {
+            song.meter_map.set_meter_at(at, numerator, denominator).map_err(|e| e.to_string())
+        });
+    }
+
+    /// After a tempo change, playback carries on from the same spot in the music
+    /// rather than the same number of seconds in.
+    fn keep_playback_in_place(&mut self) {
+        if self.is_playing() {
+            let seconds = self.tick_seconds(self.playhead);
+            if let Ok(audio) = &mut self.audio {
+                let _ = audio.seek(seconds);
+            }
+        }
+    }
+
+    fn toggle_metronome(&mut self) {
+        self.metronome = !self.metronome;
+        let on = self.metronome;
+        self.with_audio(|a| a.set_metronome(on).map(|_| format!("metronome {}", if on { "on" } else { "off" })));
+    }
+
+    /// Counts one tap. From the second tap on, the tempo at the playhead follows the
+    /// average gap between the recent taps; one run of taps is one undo step.
+    fn tap_tempo(&mut self, now: Instant) {
+        if self.taps.last().is_some_and(|last| now.duration_since(*last) > TAP_RESET) {
+            self.taps.clear();
+            self.editor.undo.break_coalescing();
+        }
+        self.taps.push(now);
+        if self.taps.len() > TAPS_KEPT {
+            self.taps.remove(0);
+        }
+        let (Some(first), Some(last)) = (self.taps.first(), self.taps.last()) else { return };
+        let span = last.duration_since(*first).as_secs_f64();
+        if self.taps.len() < 2 || span <= 0.0 {
+            self.status = "tap: keep tapping in time".into();
+            return;
+        }
+        let bpm = (60.0 * (self.taps.len() - 1) as f64 / span).round().clamp(MIN_BPM, MAX_BPM);
+        let at = self.editor.song.tempo_map.change_at_or_before(self.playhead);
+        self.set_tempo_at(at, bpm, Some("tap_tempo"));
+    }
+
+    /// Switches the loop on or off. A song without a loop region gets one first: around
+    /// the selection, or the bars from the playhead on.
+    fn toggle_loop(&mut self) {
+        let region = match self.editor.song.loop_region {
+            Some(r) => LoopRegion { enabled: !r.enabled, ..r },
+            None => {
+                let (start, end) = self.default_loop_span();
+                LoopRegion { start, end, enabled: true }
+            }
+        };
+        self.set_loop(Some(region));
+    }
+
+    fn default_loop_span(&self) -> (Tick, Tick) {
+        let song = &self.editor.song;
+        let meter = &song.meter_map;
+        let selected = self.editor.track().map(|t| t.notes.iter().filter(|n| self.editor.selection.contains(&n.id)).collect::<Vec<_>>()).unwrap_or_default();
+        let first = selected.iter().map(|n| n.start).min();
+        let last = selected.iter().map(|n| n.end()).max();
+        if let (Some(first), Some(last)) = (first, last) {
+            let start = meter.tick_of_bar(song.ppq, meter.bar_beat_of(song.ppq, first).bar);
+            let end_bar = meter.bar_beat_of(song.ppq, last);
+            let end = if meter.tick_of_bar(song.ppq, end_bar.bar) == last { last } else { meter.tick_of_bar(song.ppq, end_bar.bar + 1) };
+            return (start, end);
+        }
+        let bar = meter.bar_beat_of(song.ppq, self.playhead).bar;
+        (meter.tick_of_bar(song.ppq, bar), meter.tick_of_bar(song.ppq, bar + DEFAULT_LOOP_BARS))
+    }
+
+    /// The loop region is part of the song file but not of undo, like the header width.
+    fn set_loop(&mut self, region: Option<LoopRegion>) {
+        if self.editor.song.loop_region == region {
+            return;
+        }
+        self.editor.song.loop_region = region;
+        self.song_changed();
+        let song = &self.editor.song;
+        self.status = match region {
+            Some(r) => {
+                let bar = |tick| song.meter_map.bar_beat_of(song.ppq, tick).to_string();
+                format!("loop {}: {} to {}", if r.enabled { "on" } else { "off" }, bar(r.start), bar(r.end))
+            }
+            None => "loop removed".into(),
+        };
     }
 
     fn with_audio(&mut self, f: impl FnOnce(&mut Audio) -> Result<String, mp_audio::AudioError>) {
@@ -649,6 +798,7 @@ impl App {
         self.keymap_editor.open = false;
         self.picker.open = false;
         self.track_rename = None;
+        self.value_entry = None;
     }
 
     fn open_keymap_editor(&mut self) {
@@ -663,9 +813,10 @@ impl App {
 
     /// Handles one keypress (or a menu click standing in for one), written in keymap syntax.
     fn handle_key(&mut self, text: &str, ctx: &egui::Context) {
-        let typing = self.picker.open || self.cmdline.is_some() || self.track_rename.is_some();
+        let typing = self.picker.open || self.cmdline.is_some() || self.track_rename.is_some() || self.value_entry.is_some();
         if typing && APP_CHORDS.contains(&text) {
             self.finish_rename();
+            self.finish_entry();
             self.close_overlays();
             self.cmdline = None;
             self.handle_app_chord(text, ctx);
@@ -697,6 +848,10 @@ impl App {
         }
         if self.track_rename.is_some() {
             self.handle_rename_chord(text);
+            return;
+        }
+        if self.value_entry.is_some() {
+            self.handle_entry_chord(text);
             return;
         }
         if self.handle_app_chord(text, ctx) {
@@ -789,6 +944,7 @@ impl App {
 
     fn apply_roll_action(&mut self, action: RollAction) {
         self.finish_rename();
+        self.finish_entry();
         if self.cmdline.is_some() || self.show_cheat_sheet || self.picker.open {
             return;
         }
@@ -863,7 +1019,12 @@ impl App {
             return;
         }
         self.finish_rename();
+        self.finish_entry();
         if self.cmdline.is_some() || self.show_cheat_sheet || self.picker.open {
+            return;
+        }
+        if self.apply_time_action(&action) {
+            self.scroll_views_to_cursor();
             return;
         }
         let mix = match action {
@@ -917,9 +1078,70 @@ impl App {
             | TracksAction::ToggleSolo { .. }
             | TracksAction::SetVolume { .. }
             | TracksAction::SetPan { .. }
-            | TracksAction::EndMixGesture => {}
+            | TracksAction::EndMixGesture
+            | TracksAction::SetLoop { .. }
+            | TracksAction::ToggleLoopEnabled
+            | TracksAction::RemoveLoop
+            | TracksAction::MoveTimeChange { .. }
+            | TracksAction::EndTimeChangeDrag
+            | TracksAction::AddTempoChange { .. }
+            | TracksAction::AddMeterChange { .. }
+            | TracksAction::RemoveTempoChange { .. }
+            | TracksAction::RemoveMeterChange { .. } => {}
         }
         self.scroll_views_to_cursor();
+    }
+
+    /// The ruler's loop and tempo/time-signature actions. False for any other action.
+    fn apply_time_action(&mut self, action: &TracksAction) -> bool {
+        let song = &self.editor.song;
+        match *action {
+            TracksAction::SetLoop { start, end, enabled } => self.set_loop(Some(LoopRegion { start: Tick(start), end: Tick(end), enabled })),
+            TracksAction::ToggleLoopEnabled => self.toggle_loop(),
+            TracksAction::RemoveLoop => self.set_loop(None),
+            TracksAction::MoveTimeChange { from, to } => {
+                let (from, to) = (Tick(from), Tick(to));
+                let at = song.meter_map.bar_beat_of(song.ppq, to);
+                self.edit_song_merging(format!("change moved to {at}"), Some("move_time_change"), |song| {
+                    let tempo = song.tempo_map.move_change(from, to);
+                    let meter = song.meter_map.move_change(from, to);
+                    if tempo || meter { Ok(()) } else { Err("nothing to move there".into()) }
+                });
+                self.keep_playback_in_place();
+                self.seek_playhead(to);
+            }
+            TracksAction::EndTimeChangeDrag => self.editor.undo.break_coalescing(),
+            TracksAction::AddTempoChange { tick } => {
+                let (at, bpm) = (Tick(tick), song.tempo_map.bpm_at(Tick(tick)));
+                let bar = song.meter_map.bar_beat_of(song.ppq, at);
+                self.edit_song(format!("tempo change at {bar}: drag the tempo in the transport bar to set it"), |song| {
+                    song.tempo_map.set_tempo_at(at, bpm).map_err(|e| e.to_string())
+                });
+                self.seek_playhead(at);
+            }
+            TracksAction::AddMeterChange { tick } => {
+                let at = Tick(tick);
+                let (n, d) = song.meter_map.meter_at(at);
+                let bar = song.meter_map.bar_beat_of(song.ppq, at);
+                self.edit_song(format!("time signature change at {bar}: pick it in the transport bar"), |song| {
+                    song.meter_map.set_meter_at(at, n, d).map_err(|e| e.to_string())
+                });
+                self.seek_playhead(at);
+            }
+            TracksAction::RemoveTempoChange { tick } => {
+                self.edit_song("tempo change deleted".into(), |song| {
+                    if song.tempo_map.remove_at(Tick(tick)) { Ok(()) } else { Err("no tempo change there".into()) }
+                });
+                self.keep_playback_in_place();
+            }
+            TracksAction::RemoveMeterChange { tick } => {
+                self.edit_song("time signature change deleted".into(), |song| {
+                    if song.meter_map.remove_at(Tick(tick)) { Ok(()) } else { Err("no time signature change there".into()) }
+                });
+            }
+            _ => return false,
+        }
+        true
     }
 
     fn song_changed(&mut self) {
@@ -1001,6 +1223,61 @@ impl App {
         }
     }
 
+    // ----- typing a tempo or time signature -----
+
+    fn start_entry(&mut self, field: ValueField) {
+        self.close_overlays();
+        self.cmdline = None;
+        self.value_entry = Some((field, String::new()));
+        self.status = match field {
+            ValueField::Tempo => "type a tempo (20-400), Enter sets it, Escape cancels".into(),
+            ValueField::Meter => "type a time signature like 7/4, Enter sets it, Escape cancels".into(),
+        };
+    }
+
+    /// Applies the typed value. Empty or unreadable text changes nothing.
+    fn finish_entry(&mut self) {
+        let Some((field, text)) = self.value_entry.take() else { return };
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        match field {
+            ValueField::Tempo => match text.parse::<f64>() {
+                Ok(bpm) if (MIN_BPM..=MAX_BPM).contains(&bpm) => {
+                    let at = self.editor.song.tempo_map.change_at_or_before(self.playhead);
+                    self.set_tempo_at(at, bpm, None);
+                }
+                _ => self.status = format!("{text} is not a tempo from 20 to 400"),
+            },
+            ValueField::Meter => match parse_meter(text) {
+                Some((n, d)) => self.set_meter_at_playhead(n, d),
+                None => self.status = format!("{text} is not a time signature (like 3/4 or 6/8)"),
+            },
+        }
+    }
+
+    fn handle_entry_chord(&mut self, text: &str) {
+        match text {
+            "Escape" => {
+                self.value_entry = None;
+                self.status.clear();
+            }
+            "Enter" => self.finish_entry(),
+            "Backspace" => {
+                if let Some((_, value)) = &mut self.value_entry {
+                    value.pop();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn entry_text(&mut self, typed: &str) {
+        let Some((_, value)) = &mut self.value_entry else { return };
+        value.extend(typed.chars().filter(|c| c.is_ascii_digit() || matches!(c, '.' | '/')));
+    }
+
     fn rename_text(&mut self, typed: &str) {
         let Some((_, name)) = &mut self.track_rename else { return };
         name.extend(typed.chars().filter(|c| !c.is_control()));
@@ -1021,10 +1298,16 @@ impl App {
     /// Takes an undo snapshot, applies a song-level change the editor has no
     /// command for (tempo, meter, instrument), and republishes the song.
     fn edit_song(&mut self, status: String, f: impl FnOnce(&mut Song) -> Result<(), String>) {
+        self.edit_song_merging(status, None, f);
+    }
+
+    /// [`Self::edit_song`], merged into one undo step with the edits before it that
+    /// share `coalesce`.
+    fn edit_song_merging(&mut self, status: String, coalesce: Option<&str>, f: impl FnOnce(&mut Song) -> Result<(), String>) {
         let before = self.editor.snapshot();
         match f(&mut self.editor.song) {
             Ok(()) => {
-                self.editor.undo.push(before, None);
+                self.editor.undo.push(before, coalesce);
                 self.editor.song.normalize();
                 self.song_changed();
                 self.status = status;
@@ -1141,12 +1424,8 @@ impl App {
                 _ => self.status = "usage: :bpm <20-400> [here]".into(),
             },
             "meter" | "time" => {
-                let parsed = rest.first().and_then(|s| {
-                    let (n, d) = s.split_once('/')?;
-                    Some((n.parse::<u8>().ok()?, d.parse::<u8>().ok()?))
-                });
-                match parsed {
-                    Some((n, d)) if n > 0 && [1, 2, 4, 8, 16, 32].contains(&d) => {
+                match rest.first().and_then(|s| parse_meter(s)) {
+                    Some((n, d)) => {
                         let tick = self.editor.cursor.tick;
                         let at = if rest.get(1) == Some(&"here") { tick } else { Tick::ZERO };
                         self.edit_song(format!("meter {n}/{d}"), |song| {
@@ -1260,7 +1539,7 @@ impl App {
     }
 
     /// One line of cells separated by thin rules: where the cursor is, then the
-    /// editing context, the transport on the right.
+    /// editing context, the latest message on the right.
     fn draw_status_bar(&self, ui: &mut egui::Ui) {
         let theme = &self.theme;
         let mono = theme.font(theme.font_size);
@@ -1308,35 +1587,23 @@ impl App {
             cell(ui, "grid", text(e.grid.to_string(), "status_fg"));
             let track_name = e.track().map(|t| t.name.as_str()).unwrap_or("-");
             cell(ui, "track", text(format!("{}/{} {}", e.track_index + 1, song.tracks.len(), track_name), "status_fg"));
-            cell(ui, "", text(format!("{:.0} bpm", song.tempo_map.bpm_at(e.cursor.tick)), "status_fg"));
             cell(ui, "reverb", text(format!("{}%", (song.master_reverb * 100.0).round() as i32), "status_fg"));
             if !e.selection.is_empty() {
                 cell(ui, "", text(format!("{} selected", e.selection.len()), "note_selected"));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(8.0);
-                match &self.audio {
-                    Ok(a) => {
-                        let (glyph, color, seconds) = if a.is_playing() {
-                            ("▶", "accent", a.playhead_seconds())
-                        } else {
-                            ("■", "status_dim", self.tick_seconds(self.playhead))
-                        };
-                        ui.label(text(format!("{}:{:05.2}", (seconds / 60.0) as u64, seconds % 60.0), "status_fg"));
-                        ui.add_space(5.0);
-                        ui.label(text(glyph.into(), color));
-                    }
-                    Err(_) => {
-                        ui.label(text("no audio".into(), "error"));
-                    }
-                }
-                ui.add_space(8.0);
-                ui.painter().vline(ui.cursor().right().round() + 0.5, ui.max_rect().y_range(), separator);
-                ui.add_space(8.0);
                 ui.add(egui::Label::new(RichText::new(self.status.clone()).font(theme.font(theme.font_size - 1.0)).color(dim)).truncate());
             });
         });
     }
+}
+
+/// `n/d` with a numerator of at least 1 and a power-of-two denominator up to 32.
+fn parse_meter(text: &str) -> Option<(u8, u8)> {
+    let (n, d) = text.split_once('/')?;
+    let (n, d) = (n.trim().parse::<u8>().ok()?, d.trim().parse::<u8>().ok()?);
+    (n > 0 && [1, 2, 4, 8, 16, 32].contains(&d)).then_some((n, d))
 }
 
 /// File and app shortcuts that work even while the command line, a rename or the picker has the keyboard.
@@ -1388,6 +1655,8 @@ impl eframe::App for App {
                 self.keymap_editor.handle_text(&polled.text);
             } else if self.track_rename.is_some() {
                 self.rename_text(&polled.text);
+            } else if self.value_entry.is_some() {
+                self.entry_text(&polled.text);
             } else {
                 self.cmdline_text(&polled.text);
             }
@@ -1421,6 +1690,35 @@ impl eframe::App for App {
         egui::Panel::bottom("status")
             .frame(egui::Frame::NONE.fill(status_bg).inner_margin(egui::Margin::symmetric(0, 5)))
             .show(ui, |ui| self.draw_status_bar(ui));
+        let mut transport_actions = Vec::new();
+        egui::Panel::top("transport")
+            .frame(egui::Frame::NONE.fill(status_bg))
+            .exact_size(transport_bar::BAR_H)
+            .resizable(false)
+            .show_separator_line(false)
+            .show(ui, |ui| {
+                let song = &self.editor.song;
+                let (playing, seconds) = match &self.audio {
+                    Ok(a) if a.is_playing() => (true, a.playhead_seconds()),
+                    _ => (false, self.tick_seconds(self.playhead)),
+                };
+                let view = TransportView {
+                    audio_ok: self.audio.is_ok(),
+                    playing,
+                    position: song.meter_map.bar_beat_of(song.ppq, self.playhead),
+                    seconds,
+                    bpm: song.tempo_map.bpm_at(self.playhead),
+                    meter: song.meter_map.meter_at(self.playhead),
+                    loop_on: song.loop_region.is_some_and(|r| r.enabled),
+                    metronome: self.metronome,
+                    entry: self.value_entry.as_ref().map(|(field, text)| (*field, text.as_str())),
+                    keymap: &self.keymap,
+                };
+                self.transport.draw(ui, &view, &self.theme, &mut transport_actions);
+            });
+        for action in transport_actions {
+            self.apply_transport_action(action);
+        }
         let playhead = Some(self.playhead.get() as f64);
         let background = self.theme.color("background");
         let names: Vec<String> = {

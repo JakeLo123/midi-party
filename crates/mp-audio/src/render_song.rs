@@ -83,20 +83,44 @@ impl RenderTrack {
     }
 }
 
+/// A stretch of the song where beats are evenly spaced: one tempo and one meter.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BeatSegment {
+    /// Time of the first beat in the segment, in seconds.
+    pub first_beat: f64,
+    pub beat_seconds: f64,
+    /// Where the next segment starts (infinity for the last one).
+    pub end: f64,
+    pub beats_per_bar: u32,
+    /// Which beat of its bar the first beat is, counted from 0.
+    pub first_beat_in_bar: u32,
+}
+
+impl BeatSegment {
+    /// Whether beat `k` of the segment is the first beat of a bar.
+    pub fn is_downbeat(&self, k: u64) -> bool {
+        (u64::from(self.first_beat_in_bar) + k).is_multiple_of(u64::from(self.beats_per_bar.max(1)))
+    }
+}
+
 /// A whole song, ready to play. Immutable once built; edits produce a new one.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct RenderSong {
     pub tracks: Vec<RenderTrack>,
     /// Time of the last event, in seconds.
     pub length: f64,
+    /// Where the metronome clicks, sorted by time.
+    pub beats: Vec<BeatSegment>,
+    /// While set, playback that reaches `end` jumps back to `start` (seconds).
+    pub loop_range: Option<(f64, f64)>,
 }
 
 impl RenderSong {
-    /// Builds a song. Tracks beyond [`MAX_TRACKS`] are dropped.
+    /// Builds a song with no beats and no loop. Tracks beyond [`MAX_TRACKS`] are dropped.
     pub fn new(mut tracks: Vec<RenderTrack>) -> Self {
         tracks.truncate(MAX_TRACKS);
         let length = tracks.iter().map(RenderTrack::last_event_time).fold(0.0, f64::max);
-        Self { tracks, length }
+        Self { tracks, length, beats: Vec::new(), loop_range: None }
     }
 }
 

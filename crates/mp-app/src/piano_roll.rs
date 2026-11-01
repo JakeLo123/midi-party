@@ -609,6 +609,13 @@ impl RollView {
         let painter = painter.with_clip_rect(ruler);
         painter.rect_filled(ruler, 0.0, theme.color("status_bg"));
         let song = &editor.song;
+        if let Some(region) = song.loop_region {
+            let x0 = self.x_of(area, region.start.get() as f64);
+            let x1 = self.x_of(area, region.end.get() as f64);
+            let band = Rect::from_x_y_ranges(Rangef::new(x0, x1), Rangef::new(ruler.top() + 2.0, ruler.top() + 5.0));
+            let fill = if region.enabled { theme.color("accent") } else { theme.color("bar_line") };
+            painter.rect_filled(band, 0.0, fill);
+        }
         let right = self.tick_at_right(area);
         let mut bar = song.meter_map.bar_beat_of(song.ppq, Tick(self.left_tick as u64)).bar;
         loop {

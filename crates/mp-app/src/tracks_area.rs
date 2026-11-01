@@ -4,7 +4,7 @@
 
 use egui::text::{LayoutJob, TextWrapping};
 use egui::{Align2, Color32, CornerRadius, CursorIcon, FontId, Painter, Pos2, Rangef, Rect, Sense, Stroke, Ui, Vec2};
-use mp_core::{pan_label, Editor, Note, Song, Tick, MAX_TRACK_VOLUME_PERCENT};
+use mp_core::{pan_label, Editor, LoopRegion, Note, Song, Tick, MAX_TRACK_VOLUME_PERCENT};
 
 use crate::theme::Theme;
 
@@ -26,7 +26,16 @@ const ROW_H: f32 = 46.0;
 /// Centre lines of a header's two rows of text and controls, from the row's top.
 const LINE1_Y: f32 = 12.0;
 const LINE2_Y: f32 = 34.0;
-const RULER_H: f32 = 16.0;
+/// The ruler's three strips, top to bottom: tempo and time-signature changes, the
+/// loop region, and bar numbers (where clicks move the playhead).
+const MARKER_H: f32 = 16.0;
+const LOOP_H: f32 = 13.0;
+const BAR_H: f32 = 16.0;
+const RULER_H: f32 = MARKER_H + LOOP_H + BAR_H;
+/// How close to a loop region's end the pointer must be to resize it.
+const LOOP_EDGE_GRAB: f32 = 5.0;
+/// Below this many pixels per beat, loop edges snap to bars instead of beats.
+const MIN_BEAT_SNAP_PX: f32 = 10.0;
 /// The fitted view never shows fewer bars than this, so an empty song still has a map.
 const MIN_FIT_BARS: u32 = 16;
 /// A lane never squeezes fewer pitch rows than this into its height.
@@ -63,6 +72,65 @@ pub enum TracksAction {
     SetPan { track: usize, value: i32 },
     /// A slider or knob drag ended: the next change is a separate undo step.
     EndMixGesture,
+    /// The loop strip was dragged: the loop region is now `start..end`.
+    SetLoop { start: u64, end: u64, enabled: bool },
+    /// The loop region was clicked: switch it on or off.
+    ToggleLoopEnabled,
+    RemoveLoop,
+    /// A tempo or time-signature change (or both, at one tick) was dragged from `from` to `to`.
+    MoveTimeChange { from: u64, to: u64 },
+    /// That drag ended: the next move is a separate undo step.
+    EndTimeChangeDrag,
+    AddTempoChange { tick: u64 },
+    AddMeterChange { tick: u64 },
+    RemoveTempoChange { tick: u64 },
+    RemoveMeterChange { tick: u64 },
+}
+
+/// Tempo and time-signature changes that share a tick, shown as one flag in the ruler.
+#[derive(Clone, Debug, PartialEq)]
+struct TimeMarker {
+    tick: u64,
+    bpm: Option<f64>,
+    meter: Option<(u8, u8)>,
+}
+
+impl TimeMarker {
+    fn label(&self) -> String {
+        let tempo = self.bpm.map(|bpm| format!("{} bpm", crate::transport_bar::bpm_label(bpm)));
+        let meter = self.meter.map(|(n, d)| format!("{n}/{d}"));
+        tempo.into_iter().chain(meter).collect::<Vec<_>>().join("  ")
+    }
+}
+
+fn time_markers(song: &Song) -> Vec<TimeMarker> {
+    let mut markers: Vec<TimeMarker> = song.tempo_map.points().iter().map(|p| TimeMarker { tick: p.tick.get(), bpm: Some(p.bpm), meter: None }).collect();
+    for p in song.meter_map.points() {
+        match markers.iter_mut().find(|m| m.tick == p.tick.get()) {
+            Some(m) => m.meter = Some((p.numerator, p.denominator)),
+            None => markers.push(TimeMarker { tick: p.tick.get(), bpm: None, meter: Some((p.numerator, p.denominator)) }),
+        }
+    }
+    markers.sort_by_key(|m| m.tick);
+    markers
+}
+
+/// What a drag in the loop strip is doing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum LoopDrag {
+    /// Marking a new region from `anchor` to the pointer.
+    Mark { anchor: u64 },
+    /// Moving one end; `anchor` is the end that stays.
+    Resize { anchor: u64 },
+    /// Moving the whole region, held `grab` ticks after its start.
+    Move { grab: u64, len: u64 },
+}
+
+/// What a right-click in the marker strip was on, kept while its menu is open.
+#[derive(Clone, Debug, PartialEq)]
+enum MarkerMenu {
+    Marker(TimeMarker),
+    Empty { beat: u64, bar: u64 },
 }
 
 /// Where a row header's controls sit: badges on the first line, slider and knob on
@@ -127,11 +195,25 @@ pub struct TracksArea {
     scrub_tick: Option<u64>,
     /// The track whose row was last scrolled into view.
     shown_track: Option<usize>,
+    loop_drag: Option<LoopDrag>,
+    /// The tick of the tempo or time-signature change being dragged.
+    marker_drag: Option<u64>,
+    marker_menu: Option<MarkerMenu>,
 }
 
 impl Default for TracksArea {
     fn default() -> Self {
-        Self { px_per_tick: 0.01, left_tick: 0.0, fitted_to_song: true, lanes_width_px: 0.0, scrub_tick: None, shown_track: None }
+        Self {
+            px_per_tick: 0.01,
+            left_tick: 0.0,
+            fitted_to_song: true,
+            lanes_width_px: 0.0,
+            scrub_tick: None,
+            shown_track: None,
+            loop_drag: None,
+            marker_drag: None,
+            marker_menu: None,
+        }
     }
 }
 
@@ -210,6 +292,15 @@ fn draw_name_field(painter: &Painter, field: Rect, text: &str, theme: &Theme, fo
     let x = if galley.size().x <= inner.width() { inner.left() } else { inner.right() - galley.size().x };
     let top_left = Pos2::new(x, field.center().y - galley.size().y / 2.0);
     painter.with_clip_rect(inner).galley(top_left, galley, theme.color("status_fg"));
+}
+
+/// Names for the ruler's strips, in the header column beside them.
+fn draw_strip_labels(painter: &Painter, column: Rect, strips: [Rect; 3], theme: &Theme, font: &FontId) {
+    let x = column.right() - HEADER_PAD;
+    for (strip, name) in strips.iter().zip(["tempo · time", "loop", "bar"]) {
+        painter.text(Pos2::new(x, strip.center().y), Align2::RIGHT_CENTER, name, font.clone(), theme.color("status_dim"));
+    }
+    painter.hline(column.x_range(), column.bottom() - 0.5, Stroke::new(1.0, theme.color("panel_border")));
 }
 
 /// Which header controls the pointer is on, for highlighting.
@@ -361,8 +452,15 @@ impl TracksArea {
 
         let font = theme.font((theme.font_size - 3.0).max(8.0));
         let ruler = Rect::from_min_max(Pos2::new(lanes_x.min, rect.top()), Pos2::new(rect.right(), rect.top() + RULER_H));
-        self.draw_ruler(ui.painter(), ruler, lanes_x, song, theme, &font);
-        let ruler_response = ui.interact(ruler, ui.scope_id().with("tracks_ruler"), Sense::click_and_drag());
+        let marker_strip = Rect::from_min_max(ruler.min, Pos2::new(ruler.right(), ruler.top() + MARKER_H));
+        let loop_strip = Rect::from_min_max(Pos2::new(ruler.left(), marker_strip.bottom()), Pos2::new(ruler.right(), marker_strip.bottom() + LOOP_H));
+        let bar_strip = Rect::from_min_max(Pos2::new(ruler.left(), loop_strip.bottom()), ruler.max);
+        let strip_labels = Rect::from_x_y_ranges(Rangef::new(rect.left(), lanes_x.min), ruler.y_range());
+        draw_strip_labels(ui.painter(), strip_labels, [marker_strip, loop_strip, bar_strip], theme, &font);
+        self.marker_strip(ui, marker_strip, lanes_x, song, theme, &font, actions);
+        self.loop_strip(ui, loop_strip, lanes_x, song, theme, actions);
+        self.draw_ruler(ui.painter(), bar_strip, lanes_x, song, theme, &font);
+        let ruler_response = ui.interact(bar_strip, ui.scope_id().with("tracks_ruler"), Sense::click_and_drag());
         if ruler_response.drag_started() {
             actions.push(TracksAction::ScrubStart);
         }
@@ -495,7 +593,15 @@ impl TracksArea {
                 overlay.rect_filled(window, 0.0, theme.color("roll_window"));
             }
         }
-        let full_y = Rangef::new(rect.top(), rows_y.max.max(ruler.bottom()));
+        if let Some(region) = song.loop_region.filter(|r| r.enabled) {
+            if rows_y.span() > 0.0 {
+                let edge = theme.color("accent").gamma_multiply(0.45);
+                for tick in [region.start, region.end] {
+                    overlay.vline(self.x_of(lanes_x.min, tick.get() as f64).round() + 0.5, rows_y, Stroke::new(1.0, edge));
+                }
+            }
+        }
+        let full_y = Rangef::new(bar_strip.top(), rows_y.max.max(ruler.bottom()));
         let cursor_x = self.x_of(lanes_x.min, editor.cursor.tick.get() as f64);
         overlay.vline(cursor_x.round() + 0.5, full_y, Stroke::new(1.0, theme.color("cursor")));
         if let Some(tick) = playhead_tick {
@@ -520,6 +626,191 @@ impl TracksArea {
                 }
             }
         }
+    }
+
+    /// Where a loop edge dragged to `tick` lands: the nearest beat, or the nearest bar
+    /// when beats are too close together to aim at.
+    fn snap_loop_edge(&self, song: &Song, tick: f64) -> u64 {
+        let at = Tick(tick.max(0.0) as u64);
+        let beat_px = song.meter_map.beat_ticks_at(song.ppq, at).get() as f32 * self.px_per_tick;
+        if beat_px >= MIN_BEAT_SNAP_PX {
+            song.meter_map.nearest_beat(song.ppq, at).get()
+        } else {
+            song.meter_map.nearest_bar(song.ppq, at).get()
+        }
+    }
+
+    /// The loop region: drag on empty space to mark one, drag it to move it, drag an
+    /// end to resize it, click it to switch it on or off, right-click to remove it.
+    fn loop_strip(&mut self, ui: &mut Ui, strip: Rect, lanes_x: Rangef, song: &Song, theme: &Theme, actions: &mut Vec<TracksAction>) {
+        let region = song.loop_region;
+        let region_x = region.map(|r| (self.x_of(lanes_x.min, r.start.get() as f64), self.x_of(lanes_x.min, r.end.get() as f64)));
+        let painter = ui.painter().with_clip_rect(strip);
+        painter.rect_filled(strip, 0.0, theme.color("lane"));
+        if let (Some(r), Some((x0, x1))) = (region, region_x) {
+            let band = Rect::from_x_y_ranges(Rangef::new(x0, x1), strip.y_range().shrink(2.0));
+            let fill = if r.enabled { theme.color("accent") } else { theme.color("bar_line") };
+            painter.rect_filled(band, CornerRadius::same(2), fill);
+        }
+
+        let response = ui
+            .interact(strip, ui.scope_id().with("tracks_loop"), Sense::click_and_drag())
+            .on_hover_text("Loop: drag to mark a region, click it to switch the loop on or off, right-click to remove it");
+        let on_edge = |x: f32| region_x.and_then(|(x0, x1)| if (x - x0).abs() <= LOOP_EDGE_GRAB { Some(true) } else if (x - x1).abs() <= LOOP_EDGE_GRAB { Some(false) } else { None });
+        let inside = |x: f32| region_x.is_some_and(|(x0, x1)| (x0..=x1).contains(&x));
+        if let Some(pos) = response.hover_pos() {
+            if on_edge(pos.x).is_some() || matches!(self.loop_drag, Some(LoopDrag::Resize { .. })) {
+                ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
+            } else if inside(pos.x) {
+                ui.ctx().set_cursor_icon(if response.dragged() { CursorIcon::Grabbing } else { CursorIcon::Grab });
+            }
+        }
+        if response.drag_started() {
+            if let Some(origin) = ui.input(|i| i.pointer.press_origin()) {
+                let tick = self.tick_at_x(lanes_x.min, origin.x);
+                self.loop_drag = Some(match (region, on_edge(origin.x)) {
+                    (Some(r), Some(true)) => LoopDrag::Resize { anchor: r.end.get() },
+                    (Some(r), Some(false)) => LoopDrag::Resize { anchor: r.start.get() },
+                    (Some(r), None) if inside(origin.x) => {
+                        LoopDrag::Move { grab: (tick as u64).saturating_sub(r.start.get()), len: r.end.get() - r.start.get() }
+                    }
+                    _ => LoopDrag::Mark { anchor: self.snap_loop_edge(song, tick) },
+                });
+            }
+        }
+        if let (Some(drag), true, Some(pos)) = (self.loop_drag, response.dragged(), response.interact_pointer_pos()) {
+            let tick = self.tick_at_x(lanes_x.min, pos.x);
+            let (start, end) = match drag {
+                LoopDrag::Mark { anchor } | LoopDrag::Resize { anchor } => {
+                    let other = self.snap_loop_edge(song, tick);
+                    (anchor.min(other), anchor.max(other))
+                }
+                LoopDrag::Move { grab, len } => {
+                    let start = self.snap_loop_edge(song, (tick - grab as f64).max(0.0));
+                    (start, start + len)
+                }
+            };
+            let enabled = match drag {
+                LoopDrag::Mark { .. } => true,
+                LoopDrag::Resize { .. } | LoopDrag::Move { .. } => region.is_some_and(|r| r.enabled),
+            };
+            let wanted = LoopRegion { start: Tick(start), end: Tick(end), enabled };
+            if end > start && region != Some(wanted) {
+                actions.push(TracksAction::SetLoop { start, end, enabled });
+            }
+        }
+        if response.drag_stopped() {
+            self.loop_drag = None;
+        }
+        if response.clicked() && response.interact_pointer_pos().is_some_and(|p| inside(p.x)) {
+            actions.push(TracksAction::ToggleLoopEnabled);
+        }
+        if region.is_some() {
+            response.context_menu(|ui| {
+                let on = region.is_some_and(|r| r.enabled);
+                if ui.button(if on { "Switch loop off" } else { "Switch loop on" }).clicked() {
+                    actions.push(TracksAction::ToggleLoopEnabled);
+                }
+                if ui.button("Remove loop").clicked() {
+                    actions.push(TracksAction::RemoveLoop);
+                }
+            });
+        }
+    }
+
+    /// Tempo and time-signature changes as flags. Click one to move the playhead
+    /// there (the transport bar then edits it), drag one to move it, right-click for
+    /// adding and deleting changes.
+    #[allow(clippy::too_many_arguments)]
+    fn marker_strip(&mut self, ui: &mut Ui, strip: Rect, lanes_x: Rangef, song: &Song, theme: &Theme, font: &FontId, actions: &mut Vec<TracksAction>) {
+        let markers = time_markers(song);
+        let painter = ui.painter().with_clip_rect(strip);
+        let mut hits: Vec<(Rect, &TimeMarker)> = Vec::with_capacity(markers.len());
+        for (i, marker) in markers.iter().enumerate() {
+            let x = self.x_of(lanes_x.min, marker.tick as f64).round() + 0.5;
+            let next_x = markers.get(i + 1).map(|m| self.x_of(lanes_x.min, m.tick as f64)).unwrap_or(f32::INFINITY);
+            let dragging = self.marker_drag == Some(marker.tick);
+            let color = theme.color(if dragging { "status_fg" } else { "accent" });
+            painter.vline(x, strip.y_range(), Stroke::new(1.0, color));
+            let flag = Rect::from_min_size(Pos2::new(x, strip.top() + 2.0), Vec2::new(4.0, 4.0));
+            painter.rect_filled(flag, 0.0, color);
+            let text_rect = draw_truncated(&painter, Pos2::new(x + 7.0, strip.center().y), &marker.label(), next_x - x - 10.0, font, theme.color("status_fg"));
+            let right = text_rect.map(|r| r.right()).unwrap_or(x + 4.0);
+            hits.push((Rect::from_x_y_ranges(Rangef::new(x - 4.0, right + 2.0), strip.y_range()), marker));
+        }
+        painter.hline(strip.x_range(), strip.bottom() - 0.5, Stroke::new(1.0, theme.color("panel_border")));
+
+        let response = ui
+            .interact(strip, ui.scope_id().with("tracks_markers"), Sense::click_and_drag())
+            .on_hover_text("Tempo and time signature changes: click one to edit it in the transport bar, drag to move, right-click to add or delete");
+        let under = |pos: Pos2| hits.iter().rev().find(|(r, _)| r.contains(pos)).map(|(_, m)| (*m).clone());
+        if let Some(pos) = response.hover_pos() {
+            if under(pos).is_some_and(|m| m.tick > 0) || self.marker_drag.is_some() {
+                ui.ctx().set_cursor_icon(if self.marker_drag.is_some() { CursorIcon::Grabbing } else { CursorIcon::Grab });
+            } else if under(pos).is_some() {
+                ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+            }
+        }
+        if response.drag_started() {
+            let origin = ui.input(|i| i.pointer.press_origin());
+            self.marker_drag = origin.and_then(under).filter(|m| m.tick > 0).map(|m| m.tick);
+        }
+        if let (Some(from), true, Some(pos)) = (self.marker_drag, response.dragged(), response.interact_pointer_pos()) {
+            let tick = Tick(self.tick_at_x(lanes_x.min, pos.x) as u64);
+            let has_meter = markers.iter().any(|m| m.tick == from && m.meter.is_some());
+            let to = if has_meter { song.meter_map.nearest_bar(song.ppq, tick) } else { song.meter_map.nearest_beat(song.ppq, tick) }.get();
+            if to != from && to > 0 && markers.iter().all(|m| m.tick != to) {
+                actions.push(TracksAction::MoveTimeChange { from, to });
+                self.marker_drag = Some(to);
+            }
+        }
+        if response.drag_stopped() && self.marker_drag.take().is_some() {
+            actions.push(TracksAction::EndTimeChangeDrag);
+        }
+        if response.clicked() {
+            if let Some(marker) = response.interact_pointer_pos().and_then(under) {
+                actions.push(TracksAction::SetPlayhead { tick: marker.tick });
+            }
+        }
+        if response.secondary_clicked() {
+            self.marker_menu = response.interact_pointer_pos().map(|pos| match under(pos) {
+                Some(marker) => MarkerMenu::Marker(marker),
+                None => {
+                    let tick = Tick(self.tick_at_x(lanes_x.min, pos.x) as u64);
+                    MarkerMenu::Empty {
+                        beat: song.meter_map.nearest_beat(song.ppq, tick).get(),
+                        bar: song.meter_map.nearest_bar(song.ppq, tick).get(),
+                    }
+                }
+            });
+        }
+        let menu = self.marker_menu.clone();
+        response.context_menu(|ui| match &menu {
+            Some(MarkerMenu::Marker(marker)) => {
+                if ui.button("Edit in the transport bar").clicked() {
+                    actions.push(TracksAction::SetPlayhead { tick: marker.tick });
+                }
+                if marker.tick == 0 {
+                    ui.label("The song's starting tempo and time signature stay");
+                    return;
+                }
+                if marker.bpm.is_some() && ui.button("Delete tempo change").clicked() {
+                    actions.push(TracksAction::RemoveTempoChange { tick: marker.tick });
+                }
+                if marker.meter.is_some() && ui.button("Delete time signature change").clicked() {
+                    actions.push(TracksAction::RemoveMeterChange { tick: marker.tick });
+                }
+            }
+            Some(MarkerMenu::Empty { beat, bar }) => {
+                if ui.button("Add tempo change here").clicked() {
+                    actions.push(TracksAction::AddTempoChange { tick: *beat });
+                }
+                if ui.button("Add time signature change here").clicked() {
+                    actions.push(TracksAction::AddMeterChange { tick: *bar });
+                }
+            }
+            None => {}
+        });
     }
 
     fn draw_ruler(&self, painter: &Painter, ruler: Rect, lanes_x: Rangef, song: &Song, theme: &Theme, font: &FontId) {

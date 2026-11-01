@@ -87,6 +87,35 @@ impl TempoMap {
         }
     }
 
+    /// Where the tempo in effect at `tick` starts.
+    pub fn change_at_or_before(&self, tick: Tick) -> Tick {
+        self.points[self.segment_index(tick)].tick
+    }
+
+    /// Removes the tempo change at `tick`. The one at tick 0 always stays.
+    pub fn remove_at(&mut self, tick: Tick) -> bool {
+        match self.points.binary_search_by_key(&tick, |p| p.tick) {
+            Ok(i) if i > 0 => {
+                self.points.remove(i);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Moves the tempo change at `from` to `to`. The one at tick 0 never moves, and
+    /// nothing moves onto another change.
+    pub fn move_change(&mut self, from: Tick, to: Tick) -> bool {
+        let Ok(i) = self.points.binary_search_by_key(&from, |p| p.tick) else { return false };
+        if i == 0 || to == Tick::ZERO || self.points.iter().any(|p| p.tick == to) {
+            return false;
+        }
+        let bpm = self.points.remove(i).bpm;
+        let at = self.points.partition_point(|p| p.tick < to);
+        self.points.insert(at, TempoPoint { tick: to, bpm });
+        true
+    }
+
     /// The tempo in effect at `tick`.
     pub fn bpm_at(&self, tick: Tick) -> f64 {
         self.points[self.segment_index(tick)].bpm
@@ -229,6 +258,57 @@ impl MeterMap {
             Ok(i) => i,
             Err(i) => i - 1,
         }
+    }
+
+    /// Where the meter in effect at `tick` starts.
+    pub fn change_at_or_before(&self, tick: Tick) -> Tick {
+        self.points[self.segment_index(tick)].tick
+    }
+
+    /// Removes the meter change at `tick`. The one at tick 0 always stays.
+    pub fn remove_at(&mut self, tick: Tick) -> bool {
+        match self.points.binary_search_by_key(&tick, |p| p.tick) {
+            Ok(i) if i > 0 => {
+                self.points.remove(i);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Moves the meter change at `from` to `to`. The one at tick 0 never moves, and
+    /// nothing moves onto another change.
+    pub fn move_change(&mut self, from: Tick, to: Tick) -> bool {
+        let Ok(i) = self.points.binary_search_by_key(&from, |p| p.tick) else { return false };
+        if i == 0 || to == Tick::ZERO || self.points.iter().any(|p| p.tick == to) {
+            return false;
+        }
+        let mut point = self.points.remove(i);
+        point.tick = to;
+        let at = self.points.partition_point(|p| p.tick < to);
+        self.points.insert(at, point);
+        true
+    }
+
+    /// The beat line nearest `tick`. Beats count from the start of each meter change.
+    pub fn nearest_beat(&self, ppq: u32, tick: Tick) -> Tick {
+        let i = self.segment_index(tick);
+        let p = self.points[i];
+        let beat = beat_ticks(ppq, p.denominator).get().max(1);
+        let offset = tick.get() - p.tick.get();
+        let candidate = Tick(p.tick.get() + (offset + beat / 2) / beat * beat);
+        match self.points.get(i + 1) {
+            Some(next) if candidate >= next.tick || next.tick.get() - tick.get() < tick.get().abs_diff(candidate.get()) => next.tick,
+            _ => candidate,
+        }
+    }
+
+    /// The bar line nearest `tick`.
+    pub fn nearest_bar(&self, ppq: u32, tick: Tick) -> Tick {
+        let bar = self.bar_beat_of(ppq, tick).bar;
+        let start = self.tick_of_bar(ppq, bar);
+        let next = self.tick_of_bar(ppq, bar.saturating_add(1));
+        if tick.get() - start.get() < next.get().saturating_sub(tick.get()) { start } else { next }
     }
 
     /// The `(numerator, denominator)` in effect at `tick`.
@@ -543,6 +623,53 @@ impl From<Grid> for String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tempo_changes_move_and_go_but_the_first_stays() {
+        let mut m = TempoMap::constant(120.0);
+        m.set_tempo_at(Tick(960), 90.0).unwrap();
+        m.set_tempo_at(Tick(3840), 140.0).unwrap();
+        assert_eq!(m.change_at_or_before(Tick(2000)), Tick(960));
+        assert!(m.move_change(Tick(960), Tick(5000)));
+        assert_eq!(m.points().iter().map(|p| (p.tick.get(), p.bpm)).collect::<Vec<_>>(), vec![(0, 120.0), (3840, 140.0), (5000, 90.0)]);
+        assert!(!m.move_change(Tick(5000), Tick(3840)), "never onto another change");
+        assert!(!m.move_change(Tick::ZERO, Tick(10)), "the first change stays at 0");
+        assert!(!m.move_change(Tick(3840), Tick::ZERO));
+        assert!(m.remove_at(Tick(3840)));
+        assert!(!m.remove_at(Tick::ZERO));
+        assert_eq!(m.points().len(), 2);
+    }
+
+    #[test]
+    fn meter_changes_move_and_go_but_the_first_stays() {
+        let mut m = MeterMap::constant(4, 4);
+        m.set_meter_at(Tick(3840), 3, 4).unwrap();
+        assert!(m.move_change(Tick(3840), Tick(7680)));
+        assert_eq!(m.meter_at(Tick(7680)), (3, 4));
+        assert_eq!(m.meter_at(Tick(5000)), (4, 4));
+        assert!(!m.remove_at(Tick::ZERO));
+        assert!(m.remove_at(Tick(7680)));
+        assert_eq!(m.points().len(), 1);
+    }
+
+    #[test]
+    fn nearest_beat_and_bar_follow_the_meter() {
+        let ppq = 960;
+        let mut m = MeterMap::constant(4, 4);
+        assert_eq!(m.nearest_beat(ppq, Tick(400)), Tick(0));
+        assert_eq!(m.nearest_beat(ppq, Tick(500)), Tick(960));
+        assert_eq!(m.nearest_bar(ppq, Tick(1900)), Tick(0));
+        assert_eq!(m.nearest_bar(ppq, Tick(2000)), Tick(3840));
+        // 6/8 from bar 2: beats are eighths counted from the change.
+        m.set_meter_at(Tick(3840), 6, 8).unwrap();
+        assert_eq!(m.nearest_beat(ppq, Tick(3840 + 700)), Tick(3840 + 480));
+        assert_eq!(m.nearest_bar(ppq, Tick(3840 + 2000)), Tick(3840 + 2880));
+        // A change closer than any beat of the meter before it wins.
+        let mut short = MeterMap::constant(4, 4);
+        short.set_meter_at(Tick(1000), 3, 4).unwrap();
+        assert_eq!(short.nearest_beat(ppq, Tick(990)), Tick(1000));
+    }
+
     use proptest::prelude::*;
 
     const PPQ: u32 = 960;

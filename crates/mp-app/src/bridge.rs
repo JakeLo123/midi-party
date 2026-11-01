@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use mp_audio::stream::{open_default_output, AudioOutput};
 use mp_audio::{
-    has_drum_kit, load_soundfont, render_song_from, AudioError, EngineHandle, SoundFontSynth, DRUM_CHANNEL,
+    has_drum_kit, load_soundfont, loop_seconds, render_song_from, AudioError, EngineHandle, SoundFontSynth, DRUM_CHANNEL,
     MAX_TRACKS,
 };
 use mp_core::{Instrument, Song, Track};
@@ -196,7 +196,9 @@ impl Audio {
                 Err(e) => warnings.push(format!("track {}: {e}", i + 1)),
             }
         }
-        self.handle.set_song(render_song_from(song));
+        let mut rendered = render_song_from(song);
+        rendered.loop_range = loop_seconds(song);
+        self.handle.set_song(rendered);
         warnings
     }
 
@@ -219,6 +221,10 @@ impl Audio {
 
     pub fn seek(&mut self, seconds: f64) -> Result<(), AudioError> {
         self.handle.seek_seconds(seconds)
+    }
+
+    pub fn set_metronome(&mut self, on: bool) -> Result<(), AudioError> {
+        self.handle.set_metronome(on)
     }
 
     pub fn audition(&mut self, track: usize, key: u8, velocity: u8) -> Result<(), AudioError> {

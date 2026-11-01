@@ -60,6 +60,13 @@ const EDIT_ITEMS: &[(&str, &str)] = &[
 ];
 const VIEW_ITEMS: &[(&str, &str)] = &[("zoom_in", "Zoom In"), ("zoom_out", "Zoom Out"), ("zoom_to_fit", "Zoom to Fit")];
 const PIANO_ROLL: (&str, &str) = ("toggle_piano_roll", "Show Piano Roll");
+const TRANSPORT_ITEMS: &[(&str, &str)] = &[
+    ("toggle_play", "Play or Stop"),
+    ("playhead_to_start", "Go to Start"),
+    ("toggle_loop", "Loop"),
+    ("toggle_metronome", "Metronome"),
+    ("tap_tempo", "Tap Tempo"),
+];
 
 const RECENT_PREFIX: &str = "recent:";
 const CLEAR_RECENT: &str = "clear_recent";
@@ -171,6 +178,14 @@ impl MacMenu {
         )
         .expect("view menu builds");
 
+        let transport: Vec<MenuItem> = TRANSPORT_ITEMS.iter().map(|&i| command_item(i)).collect();
+        let transport_menu = Submenu::with_items(
+            "Transport",
+            true,
+            &[&transport[0], &transport[1], &separator(), &transport[2], &transport[3], &transport[4]],
+        )
+        .expect("transport menu builds");
+
         let window_menu = Submenu::with_items(
             "Window",
             true,
@@ -186,7 +201,7 @@ impl MacMenu {
         let help_menu =
             Submenu::with_items("Help", true, &[&app_item(KEY_BINDINGS), &app_item(KEYMAP_EDITOR)]).expect("help menu builds");
 
-        let bar = Menu::with_items(&[&app_menu, &file_menu, &edit_menu, &view_menu, &window_menu, &help_menu])
+        let bar = Menu::with_items(&[&app_menu, &file_menu, &edit_menu, &view_menu, &transport_menu, &window_menu, &help_menu])
             .expect("menu bar builds");
         bar.init_for_nsapp();
         window_menu.set_as_windows_menu_for_nsapp();

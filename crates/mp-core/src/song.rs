@@ -31,6 +31,15 @@ fn default_track_header_width() -> f32 {
     DEFAULT_TRACK_HEADER_WIDTH
 }
 
+/// The stretch of the song that playback repeats while `enabled`. Kept when
+/// switched off so it can be switched back on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoopRegion {
+    pub start: Tick,
+    pub end: Tick,
+    pub enabled: bool,
+}
+
 /// A position or duration in ticks. Never negative.
 ///
 /// Prefer [`Tick::saturating_sub`] when subtracting positions so cursor and note
@@ -488,6 +497,9 @@ pub struct Song {
     /// tracks area. Part of the song so a project opens laid out the way it was saved.
     #[serde(default = "default_track_header_width")]
     pub track_header_width: f32,
+    /// The loop region, if one has been marked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loop_region: Option<LoopRegion>,
 }
 
 impl Song {
@@ -502,6 +514,7 @@ impl Song {
             next_note_id: 1,
             master_reverb: DEFAULT_MASTER_REVERB,
             track_header_width: DEFAULT_TRACK_HEADER_WIDTH,
+            loop_region: None,
         }
     }
 
@@ -576,8 +589,8 @@ impl Song {
         Some(copy)
     }
 
-    /// Sorts the notes and lanes of every track and replaces a nonsensical header
-    /// width (hand-edited, or NaN) with the default.
+    /// Sorts the notes and lanes of every track, replaces a nonsensical header
+    /// width (hand-edited, or NaN) with the default and drops an empty loop region.
     pub fn normalize(&mut self) {
         for t in &mut self.tracks {
             t.sort_notes();
@@ -585,6 +598,9 @@ impl Song {
         }
         if !(self.track_header_width.is_finite() && self.track_header_width > 0.0) {
             self.track_header_width = DEFAULT_TRACK_HEADER_WIDTH;
+        }
+        if self.loop_region.is_some_and(|r| r.end <= r.start) {
+            self.loop_region = None;
         }
     }
 

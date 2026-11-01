@@ -149,6 +149,9 @@ const SPECS: &[Spec] = &[
     Spec { name: "cursor_to_playhead", args: "", aliases: &[] },
     Spec { name: "playhead_prev_bar", args: "", aliases: &[] },
     Spec { name: "playhead_next_bar", args: "", aliases: &[] },
+    Spec { name: "toggle_loop", args: "", aliases: &["loop"] },
+    Spec { name: "toggle_metronome", args: "", aliases: &["click", "metronome"] },
+    Spec { name: "tap_tempo", args: "", aliases: &["tap"] },
     Spec { name: "enter_command_line", args: "", aliases: &[] },
 ];
 
@@ -643,6 +646,9 @@ pub fn parse(line: &str) -> Result<Command, CmdLineError> {
         "cursor_to_playhead" => Command::CursorToPlayhead,
         "playhead_prev_bar" => Command::PlayheadPrevBar,
         "playhead_next_bar" => Command::PlayheadNextBar,
+        "toggle_loop" | "loop" => Command::ToggleLoop,
+        "toggle_metronome" | "click" | "metronome" => Command::ToggleMetronome,
+        "tap_tempo" | "tap" => Command::TapTempo,
         "enter_command_line" => Command::EnterCommandLine,
         other => return Err(CmdLineError::UnknownCommand(other.to_string())),
     };
@@ -767,6 +773,9 @@ pub fn to_line(cmd: &Command) -> String {
         | Command::CursorToPlayhead
         | Command::PlayheadPrevBar
         | Command::PlayheadNextBar
+        | Command::ToggleLoop
+        | Command::ToggleMetronome
+        | Command::TapTempo
         | Command::EnterCommandLine => Vec::new(),
     };
     if args.is_empty() {
