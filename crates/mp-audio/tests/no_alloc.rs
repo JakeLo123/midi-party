@@ -7,7 +7,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use mp_audio::demo::demo_song;
-use mp_audio::{create_engine, load_soundfont, SoundFontSynth};
+use mp_audio::{create_engine, load_soundfont, BeatSegment, SoundFontSynth};
 
 struct Counting;
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
@@ -34,7 +34,12 @@ fn process_does_not_allocate() {
     let (mut engine, mut handle) = create_engine(sample_rate, false);
     handle.set_synth(0, Box::new(SoundFontSynth::new(&sf, sample_rate).unwrap())).unwrap();
     handle.set_synth(1, Box::new(SoundFontSynth::new(&sf, sample_rate).unwrap())).unwrap();
-    handle.set_song(demo_song());
+    let mut song = demo_song();
+    song.beats = vec![BeatSegment { first_beat: 0.0, beat_seconds: 0.5, end: f64::INFINITY, beats_per_bar: 4, first_beat_in_bar: 0 }];
+    // 1000 blocks of 512 frames is about 10.7 s, so playback goes round this loop many times.
+    song.loop_range = Some((1.0, 3.0));
+    handle.set_song(song);
+    handle.set_metronome(true).unwrap();
     handle.play().unwrap();
     handle.audition(0, 72, 100, 0.5).unwrap();
     let mut out = vec![0.0f32; 2 * 512];

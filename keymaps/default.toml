@@ -165,4 +165,7 @@
 "Alt+Enter"   = "cursor_to_playhead"
 ","           = "playhead_prev_bar"
 "."           = "playhead_next_bar"
+"Ctrl+c"      = "toggle_loop"
+"Ctrl+b"      = "toggle_metronome"
+"Ctrl+t"      = "tap_tempo"
 "Shift+;"     = "enter_command_line"

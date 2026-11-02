@@ -89,6 +89,12 @@ pub enum TransportRequest {
     CursorToPlayhead,
     /// Move the playhead `bars` bar lines forward (back, when negative) from where it is now.
     StepBars { bars: i32 },
+    /// Switch the loop region on or off; the app marks one if the song has none.
+    ToggleLoop,
+    /// Switch the metronome click on or off.
+    ToggleMetronome,
+    /// One tap of tap tempo.
+    TapTempo,
 }
 
 /// What a view command asks the app to do.
@@ -284,10 +290,12 @@ impl Editor {
     }
 
     fn restore(&mut self, s: Snapshot) {
-        // The header width is layout, not an edit: undo never moves it.
+        // The header width and the loop region are layout, not edits: undo never moves them.
         let header_width = self.song.track_header_width;
+        let loop_region = self.song.loop_region;
         self.song = s.song;
         self.song.track_header_width = header_width;
+        self.song.loop_region = loop_region;
         self.cursor = s.cursor;
         self.selection = s.selection;
         self.track_index = s.track_index.min(self.song.tracks.len().saturating_sub(1));
@@ -586,6 +594,9 @@ impl Editor {
             Command::PlayheadToStart => ev.push(EditorEvent::Transport(TransportRequest::Seek { to: Tick::ZERO })),
             Command::PlayheadToCursor => ev.push(EditorEvent::Transport(TransportRequest::Seek { to: self.cursor.tick })),
             Command::CursorToPlayhead => ev.push(EditorEvent::Transport(TransportRequest::CursorToPlayhead)),
+            Command::ToggleLoop => ev.push(EditorEvent::Transport(TransportRequest::ToggleLoop)),
+            Command::ToggleMetronome => ev.push(EditorEvent::Transport(TransportRequest::ToggleMetronome)),
+            Command::TapTempo => ev.push(EditorEvent::Transport(TransportRequest::TapTempo)),
             Command::PlayheadPrevBar | Command::PlayheadNextBar => {
                 let n = i32::try_from(n).unwrap_or(i32::MAX);
                 let bars = if matches!(cmd, Command::PlayheadPrevBar) { -n } else { n };

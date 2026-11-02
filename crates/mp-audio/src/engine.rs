@@ -11,7 +11,7 @@ use arc_swap::ArcSwap;
 use rtrb::{Consumer, Producer, RingBuffer};
 
 use crate::error::AudioError;
-use crate::render_song::{EventKind, RenderSong, MAX_TRACKS};
+use crate::render_song::{BeatSegment, EventKind, RenderSong, MAX_TRACKS};
 use crate::sequencer::Sequencer;
 use crate::synth::Synth;
 
@@ -23,6 +23,11 @@ const COMMAND_QUEUE_LEN: usize = 256;
 const GARBAGE_QUEUE_LEN: usize = 256;
 /// After the last event, keep playing this long so release tails finish.
 const END_TAIL_SECONDS: f64 = 2.0;
+const CLICK_SECONDS: f64 = 0.04;
+const CLICK_HZ: f32 = 1320.0;
+const DOWNBEAT_CLICK_HZ: f32 = 1760.0;
+const CLICK_GAIN: f32 = 0.35;
+const DOWNBEAT_CLICK_GAIN: f32 = 0.5;
 
 /// Messages from the UI thread to the audio thread.
 pub enum AudioCmd {
@@ -38,6 +43,8 @@ pub enum AudioCmd {
     /// Play one note of a sound on the preview synth, cutting any preview still sounding.
     PreviewNote { channel: u8, bank: u16, program: u8, key: u8, velocity: u8, duration_frames: u32 },
     SetMasterGain(f32),
+    /// Click on every beat while playing.
+    SetMetronome(bool),
 }
 
 /// The audition slot owner that stands for the preview synth rather than a track.
@@ -71,6 +78,77 @@ impl Transport {
     }
 }
 
+/// The metronome's voice: a short sine blip that dies away.
+#[derive(Clone, Copy, Default)]
+struct Click {
+    /// Frames to wait in the current block before it starts.
+    delay: usize,
+    remaining: u32,
+    phase: f32,
+    step: f32,
+    amp: f32,
+    decay: f32,
+}
+
+impl Click {
+    fn start(&mut self, delay: usize, downbeat: bool, sample_rate: u32) {
+        let (hz, gain) = if downbeat { (DOWNBEAT_CLICK_HZ, DOWNBEAT_CLICK_GAIN) } else { (CLICK_HZ, CLICK_GAIN) };
+        let frames = (CLICK_SECONDS * f64::from(sample_rate)) as u32;
+        *self = Click {
+            delay,
+            remaining: frames,
+            phase: 0.0,
+            step: std::f32::consts::TAU * hz / sample_rate as f32,
+            amp: gain,
+            // Down to about -60 dB by the end of the click.
+            decay: (0.001f32).powf(1.0 / frames.max(1) as f32),
+        };
+    }
+
+    fn mix_into(&mut self, block: &mut [f32], gain: f32) {
+        for frame in block.as_chunks_mut::<2>().0.iter_mut() {
+            if self.delay > 0 {
+                self.delay -= 1;
+                continue;
+            }
+            if self.remaining == 0 {
+                return;
+            }
+            let s = self.phase.sin() * self.amp * gain;
+            frame[0] += s;
+            frame[1] += s;
+            self.phase = (self.phase + self.step) % std::f32::consts::TAU;
+            self.amp *= self.decay;
+            self.remaining -= 1;
+        }
+    }
+}
+
+/// The first beat in frames `[from, to)`, as (frame, is the first beat of a bar).
+fn beat_in(beats: &[BeatSegment], from: u64, to: u64, sample_rate: u32) -> Option<(u64, bool)> {
+    let sr = f64::from(sample_rate);
+    let t0 = from as f64 / sr;
+    let t1 = to as f64 / sr;
+    let first = beats.partition_point(|s| s.end <= t0);
+    for s in &beats[first..] {
+        if s.first_beat >= t1 {
+            break;
+        }
+        if s.beat_seconds <= 0.0 {
+            continue;
+        }
+        let k0 = ((t0 - s.first_beat) / s.beat_seconds).floor().max(0.0) as u64;
+        for k in k0..k0 + 2 {
+            let t = s.first_beat + k as f64 * s.beat_seconds;
+            let frame = (t * sr).round() as u64;
+            if t < s.end && (from..to).contains(&frame) {
+                return Some((frame, s.is_downbeat(k)));
+            }
+        }
+    }
+    None
+}
+
 #[derive(Clone, Copy)]
 struct Audition {
     track: usize,
@@ -97,6 +175,8 @@ pub struct Engine {
     clock: u64,
     auditions: [Option<Audition>; MAX_AUDITIONS],
     master_gain: f32,
+    metronome: bool,
+    click: Click,
     scratch_l: [f32; SUB_BLOCK],
     scratch_r: [f32; SUB_BLOCK],
 }
@@ -141,6 +221,8 @@ pub fn create_engine(sample_rate: u32, stop_at_end: bool) -> (Engine, EngineHand
         clock: 0,
         auditions: [None; MAX_AUDITIONS],
         master_gain: 1.0,
+        metronome: false,
+        click: Click::default(),
         scratch_l: [0.0; SUB_BLOCK],
         scratch_r: [0.0; SUB_BLOCK],
     };
@@ -163,6 +245,14 @@ impl Engine {
         self.playing
     }
 
+    /// The loop region in frames, while one is switched on.
+    fn loop_frames(&self) -> Option<(u64, u64)> {
+        let (start, end) = self.song.loop_range?;
+        let sr = f64::from(self.sample_rate);
+        let (start, end) = ((start * sr).round() as u64, (end * sr).round() as u64);
+        (end > start).then_some((start, end))
+    }
+
     /// Renders `out.len() / 2` frames of interleaved stereo audio.
     /// Real-time safe: no allocation, no locks, no I/O.
     pub fn process(&mut self, out: &mut [f32]) {
@@ -173,8 +263,20 @@ impl Engine {
         let frames = out.len() / 2;
         let mut done = 0;
         while done < frames {
-            let n = SUB_BLOCK.min(frames - done);
+            let mut n = SUB_BLOCK.min(frames - done);
             self.release_finished_auditions();
+            let block_start = self.sequencer.frame();
+            // Playback that reaches the loop's end from before it jumps back to its start.
+            let loop_end = self.loop_frames().filter(|&(_, end)| self.playing && block_start < end);
+            if let Some((_, end)) = loop_end {
+                n = n.min((end - block_start) as usize);
+            }
+
+            if self.playing && self.metronome {
+                if let Some((frame, downbeat)) = beat_in(&self.song.beats, block_start, block_start + n as u64, self.sample_rate) {
+                    self.click.start((frame - block_start) as usize, downbeat, self.sample_rate);
+                }
+            }
 
             if self.playing {
                 let song = &self.song;
@@ -213,18 +315,35 @@ impl Engine {
                     frame[1] += self.scratch_r[f] * pr * self.master_gain;
                 }
             }
+            self.click.mix_into(block, self.master_gain);
 
             done += n;
             self.clock += n as u64;
+            if let Some((start, end)) = loop_end {
+                if self.sequencer.frame() >= end {
+                    self.jump_to(start);
+                }
+            }
         }
 
         if self.playing {
             self.transport.playhead_frame.store(self.sequencer.frame(), Ordering::Relaxed);
             let end = self.song.length + END_TAIL_SECONDS;
-            if self.stop_at_end && self.sequencer.seconds(self.sample_rate) >= end {
+            let loop_ahead = self.loop_frames().is_some_and(|(_, end)| self.sequencer.frame() < end);
+            let keeps_going = self.metronome || loop_ahead;
+            if self.stop_at_end && !keeps_going && self.sequencer.seconds(self.sample_rate) >= end {
                 self.stop();
             }
         }
+    }
+
+    /// Moves playback to `frame`, releasing the notes that were sounding on the tracks.
+    fn jump_to(&mut self, frame: u64) {
+        for synth in self.synths.iter_mut().flatten() {
+            synth.all_notes_off();
+        }
+        self.sequencer.seek(&self.song, frame, self.sample_rate);
+        self.resend_controller_state();
     }
 
     fn drain_commands(&mut self) {
@@ -284,6 +403,7 @@ impl Engine {
                     }
                 }
                 AudioCmd::SetMasterGain(gain) => self.master_gain = gain.max(0.0),
+                AudioCmd::SetMetronome(on) => self.metronome = on,
             }
         }
     }
@@ -454,6 +574,10 @@ impl EngineHandle {
 
     pub fn set_master_gain(&mut self, gain: f32) -> Result<(), AudioError> {
         self.send(AudioCmd::SetMasterGain(gain))
+    }
+
+    pub fn set_metronome(&mut self, on: bool) -> Result<(), AudioError> {
+        self.send(AudioCmd::SetMetronome(on))
     }
 
     /// Frees whatever the audio thread handed back. Call once per UI frame.
@@ -627,6 +751,66 @@ mod tests {
         assert_eq!(out[0], 0.0);
         assert_eq!(handle.collect_garbage(), 2, "the first song and the replaced preview synth come back");
         assert!(programs.lock().unwrap().is_empty(), "the replaced preview synth was never played");
+    }
+
+    #[test]
+    fn a_loop_jumps_back_to_its_start_and_keeps_playing() {
+        let (mut engine, mut handle) = create_engine(1000, true);
+        handle.set_synth(0, Box::new(Gate { held: 0 })).unwrap();
+        let mut song = one_note_song(TrackMix::default());
+        song.loop_range = Some((0.25, 0.5));
+        handle.set_song(song);
+        handle.play().unwrap();
+        let mut out = vec![0.0; 2 * 400];
+        engine.process(&mut out);
+        assert_eq!(handle.transport().playhead_frame(), 400);
+        engine.process(&mut out);
+        assert_eq!(handle.transport().playhead_frame(), 300, "400..500, 250..500, then 250..300");
+        for _ in 0..20 {
+            engine.process(&mut out);
+        }
+        assert!(handle.transport().is_playing(), "a loop never runs into the auto-stop");
+        let frame = handle.transport().playhead_frame();
+        assert!((250..500).contains(&frame), "{frame}");
+    }
+
+    #[test]
+    fn playback_starting_after_the_loop_plays_on_through() {
+        let (mut engine, mut handle) = create_engine(1000, false);
+        let mut song = one_note_song(TrackMix::default());
+        song.loop_range = Some((0.25, 0.5));
+        handle.set_song(song);
+        handle.seek_seconds(0.6).unwrap();
+        handle.play().unwrap();
+        let mut out = vec![0.0; 2 * 500];
+        engine.process(&mut out);
+        assert_eq!(handle.transport().playhead_frame(), 1100);
+    }
+
+    #[test]
+    fn the_metronome_clicks_on_each_beat_louder_on_the_downbeat() {
+        let beats = [BeatSegment { first_beat: 0.0, beat_seconds: 0.5, end: f64::INFINITY, beats_per_bar: 4, first_beat_in_bar: 0 }];
+        assert_eq!(beat_in(&beats, 0, 64, 1000), Some((0, true)));
+        assert_eq!(beat_in(&beats, 64, 500, 1000), None);
+        assert_eq!(beat_in(&beats, 450, 514, 1000), Some((500, false)));
+        assert_eq!(beat_in(&beats, 500, 564, 1000), Some((500, false)), "a beat on a block edge belongs to one block");
+        assert_eq!(beat_in(&beats, 436, 500, 1000), None);
+        assert_eq!(beat_in(&beats, 1990, 2054, 1000), Some((2000, true)));
+
+        let (mut engine, mut handle) = create_engine(1000, true);
+        handle.set_song(RenderSong { beats: beats.to_vec(), ..RenderSong::default() });
+        handle.play().unwrap();
+        let mut out = vec![0.0; 2 * 64];
+        engine.process(&mut out);
+        assert!(out.iter().all(|s| *s == 0.0), "silent while the metronome is off");
+        handle.set_metronome(true).unwrap();
+        handle.seek_seconds(0.0).unwrap();
+        engine.process(&mut out);
+        assert!(out.iter().any(|s| s.abs() > 0.1), "clicks once switched on");
+        for _ in 0..100 {
+            engine.process(&mut out);
+        }
+        assert!(handle.transport().is_playing(), "the metronome keeps an empty song playing");
     }
 
     #[test]

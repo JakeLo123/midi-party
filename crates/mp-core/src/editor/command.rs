@@ -468,6 +468,13 @@ pub enum Command {
     PlayheadPrevBar,
     /// Ask the app to move the playhead forward to the next bar line. Count: repeat.
     PlayheadNextBar,
+    /// Ask the app to switch the loop region on or off, marking one first if there
+    /// is none. Count: ignored.
+    ToggleLoop,
+    /// Ask the app to switch the metronome click on or off. Count: ignored.
+    ToggleMetronome,
+    /// Ask the app to count a tap toward the tempo at the playhead. Count: ignored.
+    TapTempo,
 
     // ------------------------------------------------------------------ mode
     /// Enter Command-line mode (the app then owns the text field). Count: ignored.
@@ -578,6 +585,9 @@ impl Command {
             Command::CursorToPlayhead => "cursor_to_playhead",
             Command::PlayheadPrevBar => "playhead_prev_bar",
             Command::PlayheadNextBar => "playhead_next_bar",
+            Command::ToggleLoop => "toggle_loop",
+            Command::ToggleMetronome => "toggle_metronome",
+            Command::TapTempo => "tap_tempo",
             Command::EnterCommandLine => "enter_command_line",
         }
     }
@@ -725,6 +735,9 @@ impl Command {
             Command::CursorToPlayhead => "Move the cursor to the playhead".to_string(),
             Command::PlayheadPrevBar => "Move the playhead back a bar".to_string(),
             Command::PlayheadNextBar => "Move the playhead forward a bar".to_string(),
+            Command::ToggleLoop => "Loop on or off".to_string(),
+            Command::ToggleMetronome => "Metronome on or off".to_string(),
+            Command::TapTempo => "Tap the tempo".to_string(),
             Command::EnterCommandLine => "Open the command line".to_string(),
         }
     }
@@ -800,7 +813,10 @@ impl Command {
             | Command::PlayheadToCursor
             | Command::CursorToPlayhead
             | Command::PlayheadPrevBar
-            | Command::PlayheadNextBar => Category::Transport,
+            | Command::PlayheadNextBar
+            | Command::ToggleLoop
+            | Command::ToggleMetronome
+            | Command::TapTempo => Category::Transport,
             Command::AddTrack
             | Command::RemoveTrack
             | Command::DuplicateTrack
@@ -950,6 +966,9 @@ impl Command {
             Command::CursorToPlayhead,
             Command::PlayheadPrevBar,
             Command::PlayheadNextBar,
+            Command::ToggleLoop,
+            Command::ToggleMetronome,
+            Command::TapTempo,
             Command::EnterCommandLine,
         ]
     }

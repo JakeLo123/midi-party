@@ -1,8 +1,8 @@
 //! `mp_core::Song` (ticks) -> [`RenderSong`] (seconds), through the tempo map.
 
-use mp_core::{Instrument, LanePoint, Song, Track};
+use mp_core::{beat_ticks, Instrument, LanePoint, Song, Tick, Track};
 
-use crate::render_song::{EventKind, RenderSong, RenderTrack, TimedEvent, TrackMix};
+use crate::render_song::{BeatSegment, EventKind, RenderSong, RenderTrack, TimedEvent, TrackMix};
 
 const CC_MOD_WHEEL: u8 = 1;
 const CC_VOLUME: u8 = 7;
@@ -11,9 +11,49 @@ const CC_SUSTAIN: u8 = 64;
 const CC_REVERB_SEND: u8 = 91;
 const PITCH_BEND_CENTER: i32 = 8192;
 
-/// Flattens every track's notes and controller lanes into timed events.
+/// Flattens every track's notes and controller lanes into timed events, with the
+/// beats for the metronome. The loop region is left out; see [`loop_seconds`].
 pub fn render_song_from(song: &Song) -> RenderSong {
-    RenderSong::new(song.tracks.iter().map(|t| render_track(song, t)).collect())
+    let mut rendered = RenderSong::new(song.tracks.iter().map(|t| render_track(song, t)).collect());
+    rendered.beats = beat_segments(song);
+    rendered
+}
+
+/// The song's loop region in seconds, if it has one switched on.
+pub fn loop_seconds(song: &Song) -> Option<(f64, f64)> {
+    let region = song.loop_region.filter(|r| r.enabled && r.end > r.start)?;
+    let secs = |tick| song.tempo_map.tick_to_seconds(song.ppq, tick);
+    Some((secs(region.start), secs(region.end)))
+}
+
+/// One segment per stretch between tempo or meter changes.
+fn beat_segments(song: &Song) -> Vec<BeatSegment> {
+    let secs = |tick| song.tempo_map.tick_to_seconds(song.ppq, tick);
+    let mut starts: Vec<Tick> = song.tempo_map.points().iter().map(|p| p.tick).collect();
+    starts.extend(song.meter_map.points().iter().map(|p| p.tick));
+    starts.sort();
+    starts.dedup();
+    let mut segments = Vec::with_capacity(starts.len());
+    for (i, &start) in starts.iter().enumerate() {
+        let end = starts.get(i + 1).copied();
+        let meter_start = song.meter_map.change_at_or_before(start);
+        let (numerator, denominator) = song.meter_map.meter_at(start);
+        let beat = beat_ticks(song.ppq, denominator).get().max(1);
+        let k = (start.get() - meter_start.get()).div_ceil(beat);
+        let first = Tick(meter_start.get() + k * beat);
+        if end.is_some_and(|e| first >= e) {
+            continue;
+        }
+        let bpm = song.tempo_map.bpm_at(start);
+        segments.push(BeatSegment {
+            first_beat: secs(first),
+            beat_seconds: beat as f64 * 60.0 / (bpm * f64::from(song.ppq)),
+            end: end.map(secs).unwrap_or(f64::INFINITY),
+            beats_per_bar: u32::from(numerator),
+            first_beat_in_bar: (k % u64::from(numerator)) as u32,
+        });
+    }
+    segments
 }
 
 fn render_track(song: &Song, track: &Track) -> RenderTrack {
@@ -80,5 +120,31 @@ mod tests {
         assert_eq!(ev[5], TimedEvent { time: 0.75, kind: EventKind::NoteOff { key: 60 } });
         assert_eq!(ev[6], TimedEvent { time: 1.0, kind: EventKind::ControlChange { controller: 64, value: 127 } });
         assert_eq!(rendered.length, 1.0);
+    }
+
+    #[test]
+    fn beats_follow_tempo_and_meter_changes() {
+        let mut song = Song::new_empty(); // 120 BPM 4/4
+        let ppq = song.ppq as u64;
+        song.tempo_map.set_tempo_at(Tick(ppq * 4), 60.0).unwrap(); // bar 2 at half speed
+        song.meter_map.set_meter_at(Tick(ppq * 6), 3, 4).unwrap(); // 3/4 from beat 3 of bar 2
+        let beats = render_song_from(&song).beats;
+        assert_eq!(beats.len(), 3);
+        assert_eq!((beats[0].first_beat, beats[0].beat_seconds, beats[0].end), (0.0, 0.5, 2.0));
+        assert_eq!((beats[1].first_beat, beats[1].beat_seconds, beats[1].end), (2.0, 1.0, 4.0));
+        assert!(beats[1].is_downbeat(0));
+        assert_eq!((beats[2].first_beat, beats[2].beats_per_bar), (4.0, 3));
+        assert!(beats[2].is_downbeat(0) && !beats[2].is_downbeat(1) && beats[2].is_downbeat(3));
+    }
+
+    #[test]
+    fn loop_seconds_only_for_an_enabled_region() {
+        let mut song = Song::new_empty();
+        let ppq = song.ppq as u64;
+        assert_eq!(loop_seconds(&song), None);
+        song.loop_region = Some(mp_core::LoopRegion { start: Tick(ppq), end: Tick(ppq * 3), enabled: true });
+        assert_eq!(loop_seconds(&song), Some((0.5, 1.5)));
+        song.loop_region = Some(mp_core::LoopRegion { start: Tick(ppq), end: Tick(ppq * 3), enabled: false });
+        assert_eq!(loop_seconds(&song), None);
     }
 }
