@@ -40,6 +40,8 @@ use edit_ops::XorShift64;
 
 /// Default velocity for inserted notes.
 pub const INSERT_VELOCITY: u8 = 100;
+/// Shortest length `nudge_length` and free edge-drags leave a note (1/96 of a beat at 960 PPQ).
+pub const MIN_NOTE_TICKS: Tick = Tick(10);
 /// Cursor pitch of a fresh editor (middle C).
 pub const DEFAULT_CURSOR_PITCH: u8 = 60;
 /// Factor one `zoom_in` step asks the app to scale time by (`zoom_out` is its inverse).
@@ -355,6 +357,7 @@ impl Editor {
             Command::MoveSelected { dir, unit } => self.move_selected(*dir, *unit, n, &mut ev)?,
             Command::NudgeSelected { ticks } => self.nudge_selected(*ticks, n, &mut ev)?,
             Command::ChangeLength { delta_steps } => self.change_length(*delta_steps, n, &mut ev)?,
+            Command::NudgeLength { ticks } => self.nudge_length(*ticks, n, &mut ev)?,
             Command::SetLength { steps } => self.set_length(count.unwrap_or(*steps), &mut ev)?,
             Command::Legato => self.legato(&mut ev)?,
             Command::NudgeVelocity { delta } => self.nudge_velocity(*delta, n, &mut ev)?,
@@ -919,6 +922,26 @@ impl Editor {
             plural(count),
             (delta_steps * i32::try_from(n).unwrap_or(i32::MAX)).abs(),
             plural((delta_steps * i32::try_from(n).unwrap_or(i32::MAX)).unsigned_abs() as usize)
+        )));
+        Ok(())
+    }
+
+    fn nudge_length(&mut self, ticks: i64, n: u32, ev: &mut Vec<EditorEvent>) -> Result<(), EditError> {
+        let ids = self.target_ids()?;
+        let delta = ticks.saturating_mul(i64::from(n));
+        let mut probe = self.song.tracks[self.track_index].clone();
+        if edit_ops::change_length(&mut probe, &ids, delta, MIN_NOTE_TICKS) == 0 {
+            return Err(EditError::OutOfRange("length already at the minimum".to_string()));
+        }
+        self.commit(Some("nudge_length"));
+        self.song.tracks[self.track_index] = probe;
+        let count = ids.len();
+        ev.push(EditorEvent::SongChanged);
+        ev.push(EditorEvent::Status(format!(
+            "{} {count} note{} by {} ticks",
+            if delta >= 0 { "lengthened" } else { "shortened" },
+            plural(count),
+            delta.unsigned_abs()
         )));
         Ok(())
     }
