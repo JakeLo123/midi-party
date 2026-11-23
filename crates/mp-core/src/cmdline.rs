@@ -58,6 +58,7 @@ const SPECS: &[Spec] = &[
     Spec { name: "move_selected", args: "<left|right|up|down> <grid|beat|bar|semitone|octave>", aliases: &[] },
     Spec { name: "nudge_selected", args: "<ticks>", aliases: &["nudge"] },
     Spec { name: "change_length", args: "<delta steps>", aliases: &[] },
+    Spec { name: "nudge_length", args: "<ticks>", aliases: &[] },
     Spec { name: "set_length", args: "<steps>", aliases: &["len"] },
     Spec { name: "legato", args: "", aliases: &[] },
     Spec { name: "nudge_velocity", args: "<delta>", aliases: &[] },
@@ -430,6 +431,10 @@ pub fn parse(line: &str) -> Result<Command, CmdLineError> {
             a.at_most(1)?;
             Command::ChangeLength { delta_steps: a.number(0, "delta steps", "expected a number of grid steps")? }
         }
+        "nudge_length" => {
+            a.at_most(1)?;
+            Command::NudgeLength { ticks: a.number(0, "ticks", "expected a number of ticks")? }
+        }
         "set_length" => {
             a.at_most(1)?;
             Command::SetLength { steps: a.number(0, "steps", "expected a number of grid steps")? }
@@ -671,6 +676,7 @@ pub fn to_line(cmd: &Command) -> String {
         }
         Command::NudgeSelected { ticks } => vec![ticks.to_string()],
         Command::ChangeLength { delta_steps } => vec![delta_steps.to_string()],
+        Command::NudgeLength { ticks } => vec![ticks.to_string()],
         Command::SetLength { steps } => vec![steps.to_string()],
         Command::NudgeVelocity { delta } => vec![delta.to_string()],
         Command::SetVelocity { value } => vec![value.to_string()],
@@ -828,6 +834,7 @@ mod tests {
             Command::InsertChord { intervals: vec![-12, 0, 7, 12] },
             Command::NudgeSelected { ticks: -10 },
             Command::ChangeLength { delta_steps: -2 },
+            Command::NudgeLength { ticks: -10 },
             Command::Quantize { grid: Some(Grid { base: Division::Eighth, modifier: GridModifier::Triplet }), strength: 50, swing: 66 },
             Command::ExtendSelection { dir: Dir::Up, unit: Unit::Semitone },
             Command::CycleGrid { dir: CycleDir::Prev },
