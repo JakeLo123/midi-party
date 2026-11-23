@@ -329,6 +329,20 @@ impl MeterMap {
         Tick(beat_ticks(ppq, den).get() * u64::from(num))
     }
 
+    /// Start and end of the bar containing `tick`. A bar cut short by a meter change
+    /// ends at that change.
+    pub fn bar_span_at(&self, ppq: u32, tick: Tick) -> (Tick, Tick) {
+        let i = self.segment_index(tick);
+        let p = self.points[i];
+        let bar = (beat_ticks(ppq, p.denominator).get() * u64::from(p.numerator)).max(1);
+        let start = p.tick.get() + (tick.get() - p.tick.get()) / bar * bar;
+        let mut end = start + bar;
+        if let Some(next) = self.points.get(i + 1) {
+            end = end.min(next.tick.get());
+        }
+        (Tick(start), Tick(end))
+    }
+
     /// Converts a tick to a 1-based bar/beat position.
     pub fn bar_beat_of(&self, ppq: u32, tick: Tick) -> BarBeat {
         let mut bars_before: u64 = 0;
@@ -529,17 +543,21 @@ impl Grid {
 
     /// Snaps `tick` to the nearest grid point.
     ///
+    /// Grid points count from the start of each bar, so triplets and swing pairs stay
+    /// in step with bars of any length; every bar line is a grid point too.
     /// `swing` in `0.0..=1.0` delays every second grid step: `0.0` is straight, `1.0`
     /// pushes the off-step halfway to the following step (so `2/3` gives a triplet feel).
     /// Ties snap to the earlier point.
-    pub fn snap(self, tick: Tick, ppq: u32, swing: f32) -> Tick {
+    pub fn snap(self, tick: Tick, ppq: u32, swing: f32, meters: &MeterMap) -> Tick {
+        let (bar_start, bar_end) = meters.bar_span_at(ppq, tick);
+        let (bar_start, bar_end) = (bar_start.get(), bar_end.get());
         let step = self.ticks(ppq).get();
         let swing = if swing.is_finite() { swing.clamp(0.0, 1.0) } else { 0.0 };
         let delay = (f64::from(swing) * step as f64 / 2.0).round() as u64;
         let pair = step * 2;
         let t = tick.get();
-        let base = t / pair * pair;
-        let candidates = [base, base + step + delay, base + pair];
+        let base = bar_start + (t - bar_start) / pair * pair;
+        let candidates = [base, base + step + delay, base + pair].map(|c| c.min(bar_end));
         let mut best = candidates[0];
         let mut best_dist = t.abs_diff(best);
         for c in candidates.into_iter().skip(1) {
@@ -550,6 +568,37 @@ impl Grid {
             }
         }
         Tick(best)
+    }
+
+    /// The grid line at or before `tick` (see [`Grid::snap`] for where lines fall).
+    pub fn floor(self, tick: Tick, ppq: u32, meters: &MeterMap) -> Tick {
+        let (bar_start, _) = meters.bar_span_at(ppq, tick);
+        let step = self.ticks(ppq).get();
+        Tick(bar_start.get() + (tick.get() - bar_start.get()) / step * step)
+    }
+
+    /// The first grid line after `tick`.
+    pub fn next_line(self, tick: Tick, ppq: u32, meters: &MeterMap) -> Tick {
+        let (_, bar_end) = meters.bar_span_at(ppq, tick);
+        let after = self.floor(tick, ppq, meters).get() + self.ticks(ppq).get();
+        Tick(after.min(bar_end.get()))
+    }
+
+    /// The last grid line before `tick`, or tick 0.
+    pub fn prev_line(self, tick: Tick, ppq: u32, meters: &MeterMap) -> Tick {
+        match tick.get().checked_sub(1) {
+            Some(t) => self.floor(Tick(t), ppq, meters),
+            None => Tick::ZERO,
+        }
+    }
+
+    /// The same note value as a triplet, or back to plain from a triplet.
+    pub fn toggle_triplet(self) -> Grid {
+        let modifier = match self.modifier {
+            GridModifier::Triplet => GridModifier::Plain,
+            GridModifier::Plain | GridModifier::Dotted => GridModifier::Triplet,
+        };
+        Grid { base: self.base, modifier }
     }
 
     /// Cycles the base division to the next shorter one, keeping the modifier.
@@ -808,25 +857,52 @@ mod tests {
     #[test]
     fn grid_snap_straight() {
         let g = Grid::default(); // 240 ticks
-        assert_eq!(g.snap(Tick(0), PPQ, 0.0), Tick(0));
-        assert_eq!(g.snap(Tick(119), PPQ, 0.0), Tick(0));
-        assert_eq!(g.snap(Tick(120), PPQ, 0.0), Tick(0)); // tie -> earlier
-        assert_eq!(g.snap(Tick(121), PPQ, 0.0), Tick(240));
-        assert_eq!(g.snap(Tick(500), PPQ, 0.0), Tick(480));
-        assert_eq!(g.snap(Tick(700), PPQ, 0.0), Tick(720));
+        assert_eq!(g.snap(Tick(0), PPQ, 0.0, &MeterMap::constant(4, 4)), Tick(0));
+        assert_eq!(g.snap(Tick(119), PPQ, 0.0, &MeterMap::constant(4, 4)), Tick(0));
+        assert_eq!(g.snap(Tick(120), PPQ, 0.0, &MeterMap::constant(4, 4)), Tick(0)); // tie -> earlier
+        assert_eq!(g.snap(Tick(121), PPQ, 0.0, &MeterMap::constant(4, 4)), Tick(240));
+        assert_eq!(g.snap(Tick(500), PPQ, 0.0, &MeterMap::constant(4, 4)), Tick(480));
+        assert_eq!(g.snap(Tick(700), PPQ, 0.0, &MeterMap::constant(4, 4)), Tick(720));
     }
 
     #[test]
     fn grid_snap_swing() {
         let g = Grid::default(); // 240; swing 1.0 delays off-steps by 120
-        assert_eq!(g.snap(Tick(240), PPQ, 1.0), Tick(360));
-        assert_eq!(g.snap(Tick(350), PPQ, 1.0), Tick(360));
-        assert_eq!(g.snap(Tick(480), PPQ, 1.0), Tick(480));
-        assert_eq!(g.snap(Tick(100), PPQ, 1.0), Tick(0));
+        assert_eq!(g.snap(Tick(240), PPQ, 1.0, &MeterMap::constant(4, 4)), Tick(360));
+        assert_eq!(g.snap(Tick(350), PPQ, 1.0, &MeterMap::constant(4, 4)), Tick(360));
+        assert_eq!(g.snap(Tick(480), PPQ, 1.0, &MeterMap::constant(4, 4)), Tick(480));
+        assert_eq!(g.snap(Tick(100), PPQ, 1.0, &MeterMap::constant(4, 4)), Tick(0));
         // swing 2/3 -> delay 80 -> triplet feel
-        assert_eq!(g.snap(Tick(330), PPQ, 2.0 / 3.0), Tick(320));
+        assert_eq!(g.snap(Tick(330), PPQ, 2.0 / 3.0, &MeterMap::constant(4, 4)), Tick(320));
         // garbage swing is ignored
-        assert_eq!(g.snap(Tick(240), PPQ, f32::NAN), Tick(240));
+        assert_eq!(g.snap(Tick(240), PPQ, f32::NAN, &MeterMap::constant(4, 4)), Tick(240));
+    }
+
+    #[test]
+    fn grid_lines_restart_at_every_bar() {
+        // a bar of 7/8 (3360 ticks), then 4/4
+        let mut m = MeterMap::constant(7, 8);
+        m.set_meter_at(Tick(3360), 4, 4).unwrap();
+        assert_eq!(m.bar_span_at(PPQ, Tick(3000)), (Tick(0), Tick(3360)));
+        assert_eq!(m.bar_span_at(PPQ, Tick(3360)), (Tick(3360), Tick(7200)));
+        let quarter = Grid::plain(Division::Quarter);
+        assert_eq!(quarter.next_line(Tick(2880), PPQ, &m), Tick(3360), "the short bar's end is a line");
+        assert_eq!(quarter.next_line(Tick(3360), PPQ, &m), Tick(4320));
+        assert_eq!(quarter.prev_line(Tick(3360), PPQ, &m), Tick(2880));
+        assert_eq!(quarter.prev_line(Tick(0), PPQ, &m), Tick(0));
+        assert_eq!(quarter.floor(Tick(4000), PPQ, &m), Tick(3360));
+        // eighth swing pairs restart at the 4/4 bar instead of straddling it
+        let eighth = Grid::plain(Division::Eighth);
+        assert_eq!(eighth.snap(Tick(3360 + 480), PPQ, 1.0, &m), Tick(3360 + 720));
+        assert_eq!(eighth.snap(Tick(3300), PPQ, 0.0, &m), Tick(3360));
+    }
+
+    #[test]
+    fn toggle_triplet() {
+        let eighth = Grid::plain(Division::Eighth);
+        assert_eq!(eighth.toggle_triplet().to_string(), "1/8T");
+        assert_eq!(eighth.toggle_triplet().toggle_triplet(), eighth);
+        assert_eq!("1/4.".parse::<Grid>().unwrap().toggle_triplet().to_string(), "1/4T");
     }
 
     #[test]
@@ -879,8 +955,10 @@ mod tests {
         #[test]
         fn snap_lands_on_grid_when_straight(t in 0u64..1_000_000, idx in 0usize..21) {
             let g = Grid::all()[idx];
-            let s = g.snap(Tick(t), PPQ, 0.0);
-            prop_assert_eq!(s.get() % g.ticks(PPQ).get(), 0);
+            let m = MeterMap::constant(4, 4);
+            let s = g.snap(Tick(t), PPQ, 0.0, &m);
+            let (bar_start, bar_end) = m.bar_span_at(PPQ, Tick(t));
+            prop_assert!(s == bar_end || (s.get() - bar_start.get()).is_multiple_of(g.ticks(PPQ).get()));
             prop_assert!(s.get().abs_diff(t) <= g.ticks(PPQ).get() / 2);
         }
     }

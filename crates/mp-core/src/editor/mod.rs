@@ -31,10 +31,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::song::{is_default_track_name, Instrument, LaneKind, Note, NoteId, Song, Tick, Track, DRUM_CHANNEL};
-use crate::time::Grid;
+use crate::time::{Grid, GridModifier};
 use crate::undo::{Snapshot, UndoStack};
 
-pub use command::{pan_label, Category, Command, CycleDir, Dir, Unit};
+pub use command::{pan_label, Category, Command, CycleDir, Dir, Unit, DEFAULT_QUANTIZE_STRENGTH};
 
 use edit_ops::XorShift64;
 
@@ -128,6 +128,9 @@ pub enum EditorEvent {
     ToggleCheatSheet,
     /// Open the instrument picker for the current track; the app owns the list.
     OpenInstrumentPicker,
+    /// Open the quantize panel; the app owns it and drives
+    /// [`Editor::begin_quantize_preview`] and friends.
+    OpenQuantizePanel,
     /// Edit the current track's name in place; the app owns the text field.
     EditTrackName,
     /// A zoom command was run; the app owns the view.
@@ -186,8 +189,10 @@ pub struct Editor {
     /// The count prefix typed so far (for the status bar); see [`Editor::push_count_digit`].
     pub count: Option<u32>,
     pub grid: Grid,
-    /// Swing in percent (0 = straight) applied by `quantize` when it has no swing of its own.
-    pub swing: u8,
+    /// The quantize panel's last settings; `quantize` uses their swing when it has
+    /// none of its own.
+    pub quantize: QuantizeSettings,
+    quantize_preview: Option<QuantizePreview>,
     /// Notes relative to the clip start (first note at tick 0).
     pub clipboard: Vec<Note>,
     pub undo: UndoStack,
@@ -201,6 +206,31 @@ pub struct Editor {
     pub rng_seed: u64,
 }
 
+/// Grid, strength and swing for quantizing, as the quantize panel shows them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QuantizeSettings {
+    /// `None` means the editing grid.
+    pub grid: Option<Grid>,
+    /// Percent of the way each note moves to its grid point.
+    pub strength: u8,
+    /// Percent; see [`Grid::snap`]. Only applies to plain grids.
+    pub swing: u8,
+}
+
+impl Default for QuantizeSettings {
+    fn default() -> Self {
+        QuantizeSettings { grid: None, strength: DEFAULT_QUANTIZE_STRENGTH, swing: 0 }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct QuantizePreview {
+    before: Snapshot,
+    track_index: usize,
+    original: Track,
+    ids: BTreeSet<NoteId>,
+}
+
 impl Editor {
     /// Wraps a song with the cursor at tick 0 / middle C, 1/16 grid.
     pub fn new(song: Song) -> Self {
@@ -212,7 +242,8 @@ impl Editor {
             selection: BTreeSet::new(),
             count: None,
             grid: Grid::default(),
-            swing: 0,
+            quantize: QuantizeSettings::default(),
+            quantize_preview: None,
             clipboard: Vec::new(),
             undo: UndoStack::default(),
             box_anchor: None,
@@ -242,10 +273,14 @@ impl Editor {
         self.grid.ticks(self.song.ppq)
     }
 
+    /// The grid line at or before `tick`. Grid lines restart at every bar line.
+    pub fn grid_floor(&self, tick: Tick) -> Tick {
+        self.grid.floor(tick, self.song.ppq, &self.song.meter_map)
+    }
+
     /// Moves the cursor to the grid line at or before `tick`, keeping its pitch.
     pub fn cursor_to_grid_line_at(&mut self, tick: Tick) {
-        let step = self.grid_ticks().get().max(1);
-        self.cursor.tick = Tick(tick.get() / step * step);
+        self.cursor.tick = self.grid_floor(tick);
     }
 
     /// The note under the cursor on the current track.
@@ -363,9 +398,14 @@ impl Editor {
             Command::Humanize { velocity, timing } => self.humanize(*velocity, *timing, &mut ev)?,
             Command::Quantize { grid, strength, swing } => self.quantize(*grid, *strength, *swing, &mut ev)?,
             Command::QuantizeLength => self.quantize_length(&mut ev)?,
+            Command::OpenQuantizePanel => {
+                self.target_ids()?;
+                ev.push(EditorEvent::OpenQuantizePanel);
+            }
+            Command::SpreadEvenly => self.spread_evenly(count, &mut ev)?,
             Command::SetSwing { percent } => {
-                self.swing = (*percent).min(100);
-                ev.push(EditorEvent::Status(format!("swing {}%", self.swing)));
+                self.quantize.swing = (*percent).min(100);
+                ev.push(EditorEvent::Status(format!("swing {}%", self.quantize.swing)));
             }
             Command::TransposeSelected { semitones } => self.transpose(*semitones, n, &mut ev)?,
             Command::Undo => self.undo_n(n, &mut ev)?,
@@ -518,6 +558,10 @@ impl Editor {
             Command::ZoomToFit => ev.push(EditorEvent::View(ViewRequest::FitTracksToSong)),
             Command::ToggleCheatSheet => ev.push(EditorEvent::ToggleCheatSheet),
             Command::OpenInstrumentPicker => ev.push(EditorEvent::OpenInstrumentPicker),
+            Command::ToggleTriplet => {
+                self.grid = self.grid.toggle_triplet();
+                ev.push(EditorEvent::Status(format!("grid {}", self.grid)));
+            }
             Command::EditTrackName => ev.push(EditorEvent::EditTrackName),
 
             // -------------------------------------------------------------- track
@@ -636,6 +680,15 @@ impl Editor {
 
     fn step_cursor(&mut self, dir: Dir, unit: Unit, n: u32) -> Result<(), EditError> {
         match dir {
+            Dir::Left | Dir::Right if unit == Unit::Grid => {
+                let (ppq, meters) = (self.song.ppq, &self.song.meter_map);
+                for _ in 0..n {
+                    self.cursor.tick = match dir {
+                        Dir::Left => self.grid.prev_line(self.cursor.tick, ppq, meters),
+                        _ => self.grid.next_line(self.cursor.tick, ppq, meters),
+                    };
+                }
+            }
             Dir::Left | Dir::Right => {
                 let step = self.time_step(unit, dir)?.mul(u64::from(n));
                 self.cursor.tick = match dir {
@@ -1018,14 +1071,14 @@ impl Editor {
         Ok(())
     }
 
-    fn quantize(&mut self, grid: Option<Grid>, strength: u8, swing: u8, ev: &mut Vec<EditorEvent>) -> Result<(), EditError> {
+    fn quantize(&mut self, grid: Option<Grid>, strength: u8, swing: Option<u8>, ev: &mut Vec<EditorEvent>) -> Result<(), EditError> {
         let ids = self.target_ids()?;
         let grid = grid.unwrap_or(self.grid);
         let strength = strength.min(100);
-        let swing = if swing == 0 { self.swing } else { swing.min(100) };
+        let swing = swing.unwrap_or(self.quantize.swing).min(100);
         let count = ids.len();
         let mut probe = self.song.tracks[self.track_index].clone();
-        let moved = edit_ops::quantize_starts(&mut probe, &ids, grid, self.song.ppq, strength, f32::from(swing) / 100.0);
+        let moved = edit_ops::quantize_starts(&mut probe, &ids, grid, &self.song, strength, f32::from(swing) / 100.0);
         if moved == 0 {
             ev.push(EditorEvent::Status(format!("already on the {grid} grid")));
             return Ok(());
@@ -1041,6 +1094,91 @@ impl Editor {
         }
         ev.push(EditorEvent::SongChanged);
         ev.push(EditorEvent::Status(status));
+        Ok(())
+    }
+
+    /// Starts previewing a quantize of the target notes: [`Editor::preview_quantize`]
+    /// re-quantizes them from their original positions, and
+    /// [`Editor::end_quantize_preview`] keeps the result as one undo step or puts the
+    /// notes back. Starting again ends any preview still running, keeping it.
+    pub fn begin_quantize_preview(&mut self) -> Result<(), EditError> {
+        let ids = self.target_ids()?;
+        self.end_quantize_preview(true);
+        self.quantize_preview = Some(QuantizePreview {
+            before: self.snapshot(),
+            track_index: self.track_index,
+            original: self.song.tracks[self.track_index].clone(),
+            ids,
+        });
+        Ok(())
+    }
+
+    /// Whether a quantize preview is running.
+    pub fn quantize_previewing(&self) -> bool {
+        self.quantize_preview.is_some()
+    }
+
+    /// Re-quantizes the previewed notes from their original positions with `settings`,
+    /// which also become the remembered settings. Not an undo step.
+    pub fn preview_quantize(&mut self, settings: QuantizeSettings) -> Vec<EditorEvent> {
+        self.quantize = settings;
+        let Some(p) = &self.quantize_preview else { return Vec::new() };
+        let grid = settings.grid.unwrap_or(self.grid);
+        let swing = if grid.modifier == GridModifier::Plain { settings.swing.min(100) } else { 0 };
+        let mut track = p.original.clone();
+        let moved =
+            edit_ops::quantize_starts(&mut track, &p.ids, grid, &self.song, settings.strength, f32::from(swing) / 100.0);
+        let count = p.ids.len();
+        self.song.tracks[p.track_index] = track;
+        let mut status = format!("{moved} of {count} note{} moved to {grid}", plural(count));
+        if settings.strength < 100 {
+            status.push_str(&format!(" at {}%", settings.strength));
+        }
+        if swing > 0 {
+            status.push_str(&format!(" with {swing}% swing"));
+        }
+        vec![EditorEvent::SongChanged, EditorEvent::Status(status)]
+    }
+
+    /// Ends the quantize preview. `keep` makes the change one undo step; otherwise the
+    /// notes go back where they were.
+    pub fn end_quantize_preview(&mut self, keep: bool) -> Vec<EditorEvent> {
+        let Some(p) = self.quantize_preview.take() else { return Vec::new() };
+        let Some(track) = self.song.tracks.get_mut(p.track_index) else { return Vec::new() };
+        if *track == p.original {
+            return Vec::new();
+        }
+        if keep {
+            self.undo.push(p.before, None);
+            vec![EditorEvent::Status("quantized".to_string())]
+        } else {
+            *track = p.original;
+            vec![EditorEvent::SongChanged, EditorEvent::Status("quantize cancelled".to_string())]
+        }
+    }
+
+    fn spread_evenly(&mut self, beats: Option<u32>, ev: &mut Vec<EditorEvent>) -> Result<(), EditError> {
+        let ids = self.target_ids()?;
+        let mut probe = self.song.tracks[self.track_index].clone();
+        let first = probe.notes.iter().filter(|n| ids.contains(&n.id)).map(|n| n.start).min().unwrap_or(Tick::ZERO);
+        let beat = self.song.meter_map.beat_ticks_at(self.song.ppq, first);
+        let Some(spread) = edit_ops::spread_evenly(&mut probe, &ids, beat, beats.filter(|b| *b > 0)) else {
+            return Err(EditError::NoMatch("spread needs notes starting at two or more different times".to_string()));
+        };
+        if spread.changed == 0 {
+            ev.push(EditorEvent::Status("already evenly spread".to_string()));
+            return Ok(());
+        }
+        self.commit(None);
+        self.song.tracks[self.track_index] = probe;
+        let beats = spread.span.get() / beat.get().max(1);
+        ev.push(EditorEvent::SongChanged);
+        ev.push(EditorEvent::Status(format!(
+            "spread {} time{} evenly over {beats} beat{}",
+            spread.slots,
+            plural(spread.slots),
+            plural(usize::try_from(beats).unwrap_or(usize::MAX))
+        )));
         Ok(())
     }
 
@@ -1793,7 +1931,7 @@ mod tests {
         assert_eq!(e.execute(&Command::InvertSelection, None), Err(EditError::NoTracks));
         assert_eq!(e.execute(&Command::NextTrack, None), Err(EditError::NoTracks));
         assert_eq!(e.execute(&Command::DeleteSelected, None), Err(EditError::NoTracks));
-        assert_eq!(e.execute(&Command::Quantize { grid: None, strength: 100, swing: 0 }, None), Err(EditError::NoTracks));
+        assert_eq!(e.execute(&Command::Quantize { grid: None, strength: 100, swing: None }, None), Err(EditError::NoTracks));
         assert_eq!(e.execute(&Command::RemoveTrack, None), Err(EditError::NoTracks));
         assert_eq!(e.execute(&Command::DuplicateTrack, None), Err(EditError::NoTracks));
         assert_eq!(e.execute(&Command::MoveTrackUp, None), Err(EditError::NoTracks));

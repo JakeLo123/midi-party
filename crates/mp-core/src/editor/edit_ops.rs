@@ -239,12 +239,13 @@ pub fn humanize(track: &mut Track, ids: &BTreeSet<NoteId>, velocity: u8, timing:
 }
 
 /// Moves each note start `strength` percent of the way to its nearest grid point
-/// (`swing` in 0..=1, see [`Grid::snap`]). Re-sorts. Returns how many notes moved.
-pub fn quantize_starts(track: &mut Track, ids: &BTreeSet<NoteId>, grid: Grid, ppq: u32, strength: u8, swing: f32) -> usize {
+/// (`swing` in 0..=1, see [`Grid::snap`]). `song` supplies the PPQ and the bar lines.
+/// Re-sorts. Returns how many notes moved.
+pub fn quantize_starts(track: &mut Track, ids: &BTreeSet<NoteId>, grid: Grid, song: &Song, strength: u8, swing: f32) -> usize {
     let strength = f64::from(strength.min(100)) / 100.0;
     let mut changed = 0;
     for n in track.notes.iter_mut().filter(|n| ids.contains(&n.id)) {
-        let target = grid.snap(n.start, ppq, swing);
+        let target = grid.snap(n.start, song.ppq, swing, &song.meter_map);
         let from = n.start.get() as f64;
         let to = target.get() as f64;
         let new = Tick((from + (to - from) * strength).round().max(0.0) as u64);
@@ -255,6 +256,52 @@ pub fn quantize_starts(track: &mut Track, ids: &BTreeSet<NoteId>, grid: Grid, pp
     }
     track.sort_notes();
     changed
+}
+
+/// What [`spread_evenly`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Spread {
+    /// Notes whose start or length changed.
+    pub changed: usize,
+    /// Distinct start times, each now one equal slot of the span.
+    pub slots: usize,
+    pub span: Tick,
+}
+
+/// Spaces the starts of the notes in `ids` evenly from the first one, notes that
+/// start together moving together. The span is `beats` beats, or else the distance
+/// from the first start to the latest end rounded up to whole beats. Durations scale
+/// by the same ratio as that distance. Re-sorts. `None` with fewer than two distinct
+/// starts.
+pub fn spread_evenly(track: &mut Track, ids: &BTreeSet<NoteId>, beat: Tick, beats: Option<u32>) -> Option<Spread> {
+    let chosen = || track.notes.iter().filter(|n| ids.contains(&n.id));
+    let starts: BTreeSet<Tick> = chosen().map(|n| n.start).collect();
+    if starts.len() < 2 {
+        return None;
+    }
+    let first = *starts.first()?;
+    let extent = chosen().map(|n| n.end()).max()?.get() - first.get();
+    let beat = beat.get().max(1);
+    let span = match beats {
+        Some(b) => u64::from(b) * beat,
+        None => extent.div_ceil(beat) * beat,
+    };
+    let slots = starts.len();
+    let slot_of: Vec<Tick> = starts.into_iter().collect();
+    let scale = span as f64 / extent.max(1) as f64;
+    let mut changed = 0;
+    for n in track.notes.iter_mut().filter(|n| ids.contains(&n.id)) {
+        let i = slot_of.binary_search(&n.start).unwrap_or(0) as u64;
+        let start = Tick(first.get() + (i * span + slots as u64 / 2) / slots as u64);
+        let duration = Tick(((n.duration.get() as f64 * scale).round() as u64).max(1));
+        if start != n.start || duration != n.duration {
+            n.start = start;
+            n.duration = duration;
+            changed += 1;
+        }
+    }
+    track.sort_notes();
+    Some(Spread { changed, slots, span: Tick(span) })
 }
 
 /// Rounds each note's duration to the nearest whole number of `step`s, at least one.
@@ -476,23 +523,64 @@ mod tests {
         }
         let g = Grid::default(); // 240
         let mut full = s.tracks[0].clone();
-        assert_eq!(quantize_starts(&mut full, &ids, g, 960, 100, 0.0), 4);
+        assert_eq!(quantize_starts(&mut full, &ids, g, &s, 100, 0.0), 4);
         let starts: Vec<u64> = full.notes.iter().map(|n| n.start.get()).collect();
         assert_eq!(starts, vec![0, 240, 480, 1200]);
-        assert_eq!(quantize_starts(&mut full, &ids, g, 960, 100, 0.0), 0);
+        assert_eq!(quantize_starts(&mut full, &ids, g, &s, 100, 0.0), 0);
         // half strength moves halfway (rounded)
         let mut half = s.tracks[0].clone();
-        assert_eq!(quantize_starts(&mut half, &ids, g, 960, 50, 0.0), 4);
+        assert_eq!(quantize_starts(&mut half, &ids, g, &s, 50, 0.0), 4);
         let starts: Vec<u64> = half.notes.iter().map(|n| n.start.get()).collect();
         assert_eq!(starts, vec![5, 235, 490, 1190]);
         // zero strength is a no-op
         let mut none = s.tracks[0].clone();
-        assert_eq!(quantize_starts(&mut none, &ids, g, 960, 0, 0.0), 0);
+        assert_eq!(quantize_starts(&mut none, &ids, g, &s, 0, 0.0), 0);
         // full swing delays the off-steps by half a step (240 -> 360, 1200 -> 1320)
         let mut swung = s.tracks[0].clone();
-        quantize_starts(&mut swung, &ids, g, 960, 100, 1.0);
+        quantize_starts(&mut swung, &ids, g, &s, 100, 1.0);
         let starts: Vec<u64> = swung.notes.iter().map(|n| n.start.get()).collect();
         assert_eq!(starts, vec![0, 360, 480, 1320]);
+    }
+
+    fn spread(notes: &[(u64, u64, u8)], beats: Option<u32>) -> (Vec<(u64, u64, u8)>, Option<Spread>) {
+        let mut s = Song::new_empty();
+        let mut ids = BTreeSet::new();
+        for &(start, len, pitch) in notes {
+            let n = s.new_note(Tick(start), Tick(len), pitch, 100);
+            s.tracks[0].insert_note(n);
+            ids.insert(n.id);
+        }
+        let result = spread_evenly(&mut s.tracks[0], &ids, Tick(960), beats);
+        let notes = s.tracks[0].notes.iter().map(|n| (n.start.get(), n.duration.get(), n.pitch)).collect();
+        (notes, result)
+    }
+
+    #[test]
+    fn spread_evenly_makes_tuplets() {
+        // three 16ths -> an 8th-note triplet over one beat
+        let (notes, r) = spread(&[(0, 240, 60), (240, 240, 62), (480, 240, 64)], None);
+        assert_eq!(notes, vec![(0, 320, 60), (320, 320, 62), (640, 320, 64)]);
+        assert_eq!(r, Some(Spread { changed: 3, slots: 3, span: Tick(960) }));
+        // three 8ths -> a quarter-note triplet over two beats
+        let (notes, _) = spread(&[(0, 480, 60), (480, 480, 62), (960, 480, 64)], None);
+        assert_eq!(notes, vec![(0, 640, 60), (640, 640, 62), (1280, 640, 64)]);
+        // five 16ths -> a quintuplet over two beats, counted from the first note
+        let (notes, _) = spread(&[(960, 240, 60), (1200, 240, 60), (1440, 240, 60), (1680, 240, 60), (1920, 240, 60)], None);
+        assert_eq!(notes.iter().map(|n| n.0).collect::<Vec<_>>(), vec![960, 1344, 1728, 2112, 2496]);
+        // a count forces the span: three 16ths over two beats
+        let (notes, _) = spread(&[(0, 240, 60), (240, 240, 62), (480, 240, 64)], Some(2));
+        assert_eq!(notes.iter().map(|n| n.0).collect::<Vec<_>>(), vec![0, 640, 1280]);
+    }
+
+    #[test]
+    fn spread_evenly_keeps_chords_together() {
+        let (notes, r) = spread(&[(0, 240, 60), (0, 240, 64), (240, 240, 62), (480, 240, 65)], None);
+        assert_eq!(notes, vec![(0, 320, 60), (0, 320, 64), (320, 320, 62), (640, 320, 65)]);
+        assert_eq!(r.unwrap().slots, 3);
+        // a single start (one chord) has nothing to spread
+        assert_eq!(spread(&[(0, 240, 60), (0, 240, 64)], None).1, None);
+        // already even: nothing changes
+        assert_eq!(spread(&[(0, 240, 60), (240, 240, 62), (480, 240, 64), (720, 240, 65)], None).1.unwrap().changed, 0);
     }
 
     #[test]

@@ -3,7 +3,7 @@
 //! All editing state lives in the `Editor`; the app applies the actions.
 
 use egui::{Align2, Color32, FontId, Painter, Pos2, Rangef, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
-use mp_core::{percussion_short, pitch_name, Editor, LaneKind, NoteId, Tick, Track};
+use mp_core::{percussion_short, pitch_name, Division, Editor, Grid, LaneKind, NoteId, Tick, Track};
 
 use crate::theme::Theme;
 
@@ -262,7 +262,7 @@ impl RollView {
     fn handle_mouse(&mut self, ui: &mut Ui, rect: Rect, area: Rect, editor: &Editor, actions: &mut Vec<RollAction>) {
         let response = ui.allocate_rect(rect, Sense::click_and_drag());
         let grid = editor.grid_ticks().get().max(1);
-        let snap = |tick: f64| (tick as u64 / grid) * grid;
+        let snap = |tick: f64| editor.grid_floor(Tick(tick.max(0.0) as u64)).get();
 
         if response.hovered() {
             let (scroll, zoom, cmd) = ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta(), i.modifiers.mac_cmd));
@@ -458,25 +458,25 @@ impl RollView {
 
     fn draw_grid_lines(&self, painter: &Painter, area: Rect, editor: &Editor, theme: &Theme) {
         let song = &editor.song;
-        let grid = editor.grid_ticks().get().max(1);
-        let right = self.tick_at_right(area) as u64 + grid;
-        let left = self.left_tick as u64;
-        let beat = song.meter_map.beat_ticks_at(song.ppq, Tick(left)).get().max(1);
-        let bar = song.meter_map.bar_ticks_at(song.ppq, Tick(left)).get().max(1);
-        let draw_plain = grid as f32 * self.px_per_tick >= MIN_GRID_PX;
-        let step = if draw_plain { grid } else { beat };
-        let mut tick = (left / step) * step;
+        let (ppq, meters) = (song.ppq, &song.meter_map);
+        let left = Tick(self.left_tick.max(0.0) as u64);
+        let right = Tick(self.tick_at_right(area).max(0.0) as u64);
+        let dense = editor.grid_ticks().get() as f32 * self.px_per_tick < MIN_GRID_PX;
+        let lines = |tick: Tick| if dense { Grid::plain(beat_division(meters.meter_at(tick).1)) } else { editor.grid };
+        let mut tick = lines(left).floor(left, ppq, meters);
         while tick <= right {
-            let color = if tick.is_multiple_of(bar) {
+            let (bar_start, _) = meters.bar_span_at(ppq, tick);
+            let beat = meters.beat_ticks_at(ppq, tick).get().max(1);
+            let color = if tick == bar_start {
                 "bar_line"
-            } else if tick.is_multiple_of(beat) {
+            } else if (tick.get() - bar_start.get()).is_multiple_of(beat) {
                 "beat_line"
             } else {
                 "grid"
             };
-            let x = self.x_of(area, tick as f64);
+            let x = self.x_of(area, tick.get() as f64);
             painter.vline(x, area.y_range(), Stroke::new(1.0, theme.color(color)));
-            tick += step;
+            tick = lines(tick).next_line(tick, ppq, meters);
         }
     }
 
@@ -646,4 +646,9 @@ pub(crate) fn draw_playhead_marker(painter: &Painter, x: f32, bottom: f32, color
     let x = x.round();
     let points = vec![Pos2::new(x - 6.0, bottom - 8.0), Pos2::new(x + 6.0, bottom - 8.0), Pos2::new(x, bottom)];
     painter.add(egui::Shape::convex_polygon(points, color, Stroke::NONE));
+}
+
+/// The note value of one beat in a `x/denominator` meter.
+fn beat_division(denominator: u8) -> Division {
+    Division::from_denominator(u32::from(denominator)).unwrap_or(Division::Quarter)
 }

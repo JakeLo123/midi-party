@@ -200,21 +200,28 @@ pub enum Command {
     Humanize { velocity: u8, timing: u32 },
     /// Snap note starts to `grid` (the current grid if omitted). `strength` is the
     /// percentage of the way each note moves towards its grid point (100 = all the way).
-    /// `swing` is a percentage delaying every second grid step; `0` means "use the
-    /// editor's swing set by `set_swing`". Needs notes. Count: ignored.
+    /// `swing` is a percentage delaying every second grid step; when omitted, the
+    /// editor's swing set by `set_swing` is used. Needs notes. Count: ignored.
     Quantize {
         #[serde(default)]
         grid: Option<Grid>,
         #[serde(default = "default_quantize_strength")]
         strength: u8,
         #[serde(default)]
-        swing: u8,
+        swing: Option<u8>,
     },
+    /// Open the quantize panel for the selected notes (or the note under the cursor):
+    /// pick a grid, swing and strength while hearing the result. Count: ignored.
+    OpenQuantizePanel,
+    /// Space the starts of the selected notes evenly, chords kept together, across
+    /// their span rounded up to whole beats (three 16ths become an 8th-note triplet).
+    /// Lengths scale by the same ratio. Needs notes. Count: the span in beats.
+    SpreadEvenly,
     /// Round note lengths to the nearest whole number of grid steps (at least one).
     /// Needs notes. Count: ignored.
     QuantizeLength,
-    /// Set the editor's swing (percent, clamped to 100) used by `quantize` when its own
-    /// swing is 0. Not an edit. Count: ignored.
+    /// Set the editor's swing (percent, clamped to 100) used by `quantize` when it has
+    /// no swing of its own. Not an edit. Count: ignored.
     SetSwing { percent: u8 },
     /// Transpose the selected notes by `semitones`, clamped as a group to 0..=127.
     /// Needs notes. Count: multiplier.
@@ -316,6 +323,9 @@ pub enum Command {
     /// Cycle the grid division (1/4 → 1/8 → 1/16 ...), keeping dotted/triplet.
     /// Count: repeat.
     CycleGrid { dir: CycleDir },
+    /// Switch the grid between straight and triplet at the same note value (1/8 ↔ 1/8T).
+    /// Count: ignored.
+    ToggleTriplet,
     /// Show the next track (wraps). Clears the selection. Count: repeat.
     NextTrack,
     /// Show the previous track (wraps). Clears the selection. Count: repeat.
@@ -501,6 +511,8 @@ impl Command {
             Command::RampVelocity { .. } => "ramp_velocity",
             Command::Humanize { .. } => "humanize",
             Command::Quantize { .. } => "quantize",
+            Command::OpenQuantizePanel => "open_quantize_panel",
+            Command::SpreadEvenly => "spread_evenly",
             Command::QuantizeLength => "quantize_length",
             Command::SetSwing { .. } => "set_swing",
             Command::TransposeSelected { .. } => "transpose_selected",
@@ -538,6 +550,7 @@ impl Command {
             Command::Duplicate => "duplicate",
             Command::SetGrid { .. } => "set_grid",
             Command::CycleGrid { .. } => "cycle_grid",
+            Command::ToggleTriplet => "toggle_triplet",
             Command::NextTrack => "next_track",
             Command::PrevTrack => "prev_track",
             Command::ZoomIn => "zoom_in",
@@ -629,11 +642,15 @@ impl Command {
                 if *strength != DEFAULT_QUANTIZE_STRENGTH {
                     s.push_str(&format!(" at {strength}%"));
                 }
-                if *swing != 0 {
-                    s.push_str(&format!(" with {swing}% swing"));
+                match swing {
+                    Some(0) => s.push_str(" straight"),
+                    Some(swing) => s.push_str(&format!(" with {swing}% swing")),
+                    None => {}
                 }
                 s
             }
+            Command::OpenQuantizePanel => "Quantize with a grid, swing and strength…".to_string(),
+            Command::SpreadEvenly => "Spread notes evenly (make triplets and other tuplets)".to_string(),
             Command::QuantizeLength => "Round note lengths to the grid".to_string(),
             Command::SetSwing { percent } => format!("Set swing to {percent}%"),
             Command::TransposeSelected { semitones } => format!("Transpose {semitones:+} semitone(s)"),
@@ -675,6 +692,7 @@ impl Command {
             Command::SetGrid { grid } => format!("Set grid to {grid}"),
             Command::CycleGrid { dir: CycleDir::Next } => "Finer grid".to_string(),
             Command::CycleGrid { dir: CycleDir::Prev } => "Coarser grid".to_string(),
+            Command::ToggleTriplet => "Switch the grid between straight and triplet".to_string(),
             Command::NextTrack => "Next track".to_string(),
             Command::PrevTrack => "Previous track".to_string(),
             Command::ZoomIn => "Zoom in".to_string(),
@@ -786,6 +804,8 @@ impl Command {
             | Command::RampVelocity { .. }
             | Command::Humanize { .. }
             | Command::Quantize { .. }
+            | Command::OpenQuantizePanel
+            | Command::SpreadEvenly
             | Command::QuantizeLength
             | Command::TransposeSelected { .. }
             | Command::Undo
@@ -793,6 +813,7 @@ impl Command {
             Command::Copy | Command::Cut | Command::Paste | Command::Duplicate => Category::Clipboard,
             Command::SetGrid { .. }
             | Command::CycleGrid { .. }
+            | Command::ToggleTriplet
             | Command::SetSwing { .. }
             | Command::NextTrack
             | Command::PrevTrack
@@ -853,7 +874,8 @@ impl Command {
     /// is every `Lane` command except showing or cycling the lane.
     pub fn is_edit(&self) -> bool {
         match self.category() {
-            Category::Edit | Category::Track => true,
+            Category::Edit => !matches!(self, Command::OpenQuantizePanel),
+            Category::Track => true,
             Category::Clipboard => !matches!(self, Command::Copy),
             Category::Lane => !matches!(self, Command::ShowLane { .. } | Command::CycleLane),
             Category::Cursor | Category::Selection | Category::Transport | Category::View => false,
@@ -881,7 +903,9 @@ impl Command {
             Command::SetVelocity { value: 100 },
             Command::RampVelocity { from: 60, to: 110 },
             Command::Humanize { velocity: 8, timing: 10 },
-            Command::Quantize { grid: None, strength: DEFAULT_QUANTIZE_STRENGTH, swing: 0 },
+            Command::Quantize { grid: None, strength: DEFAULT_QUANTIZE_STRENGTH, swing: None },
+            Command::OpenQuantizePanel,
+            Command::SpreadEvenly,
             Command::QuantizeLength,
             Command::SetSwing { percent: 0 },
             Command::TransposeSelected { semitones: 12 },
@@ -919,6 +943,7 @@ impl Command {
             Command::Duplicate,
             Command::SetGrid { grid: Grid::default() },
             Command::CycleGrid { dir: CycleDir::Next },
+            Command::ToggleTriplet,
             Command::NextTrack,
             Command::PrevTrack,
             Command::ZoomIn,
@@ -1018,10 +1043,10 @@ mod tests {
         assert_eq!(c, Command::ExtendSelection { dir: Dir::Up, unit: Unit::Octave });
         // optional fields take their defaults
         let c: Command = toml::from_str::<toml::Table>("cmd = \"quantize\"").unwrap().try_into().unwrap();
-        assert_eq!(c, Command::Quantize { grid: None, strength: 100, swing: 0 });
+        assert_eq!(c, Command::Quantize { grid: None, strength: 100, swing: None });
         let c: Command =
             toml::from_str::<toml::Table>("cmd = \"quantize\"\ngrid = \"1/8\"\nswing = 50").unwrap().try_into().unwrap();
-        assert_eq!(c, Command::Quantize { grid: Some(Grid::plain(Division::Eighth)), strength: 100, swing: 50 });
+        assert_eq!(c, Command::Quantize { grid: Some(Grid::plain(Division::Eighth)), strength: 100, swing: Some(50) });
         let c: Command = toml::from_str::<toml::Table>("cmd = \"select_next_notes\"").unwrap().try_into().unwrap();
         assert_eq!(c, Command::SelectNextNotes { n: 4 });
         let c: Command = toml::from_str::<toml::Table>("cmd = \"keep_every_other\"\nn = 3").unwrap().try_into().unwrap();
@@ -1055,7 +1080,7 @@ mod tests {
             Command::ChangeLength { delta_steps: -1 },
             Command::TransposeSelected { semitones: -12 },
             Command::CycleGrid { dir: CycleDir::Prev },
-            Command::Quantize { grid: Some(Grid::default()), strength: 50, swing: 30 },
+            Command::Quantize { grid: Some(Grid::default()), strength: 50, swing: Some(30) },
             Command::KeepEveryOther { n: 3 },
             Command::ShowLane { kind: None },
             Command::ShowLane { kind: Some(LaneKind::Pan) },
@@ -1109,9 +1134,9 @@ mod tests {
             let value = toml::Value::try_from(&c).unwrap();
             assert_eq!(value.get("cmd").and_then(|v| v.as_str()), Some(c.name()));
         }
-        assert_eq!(Command::Quantize { grid: None, strength: 100, swing: 0 }.describe(), "Quantize to the current grid");
+        assert_eq!(Command::Quantize { grid: None, strength: 100, swing: None }.describe(), "Quantize to the current grid");
         assert_eq!(
-            Command::Quantize { grid: Some(Grid::default()), strength: 50, swing: 20 }.describe(),
+            Command::Quantize { grid: Some(Grid::default()), strength: 50, swing: Some(20) }.describe(),
             "Quantize to 1/16 at 50% with 20% swing"
         );
     }
