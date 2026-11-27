@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use crate::cmdline;
 use crate::editor::{
     Command, Cursor, CycleDir, Dir, EditError, EditorEvent, QuantizeSettings, TransportRequest, Unit, ViewRequest,
-    ZOOM_ROWS_STEP, ZOOM_TIME_STEP,
+    MIN_NOTE_TICKS, ZOOM_ROWS_STEP, ZOOM_TIME_STEP,
 };
 use crate::keymap::{parse_sequence, Keymap, Resolution};
 use crate::song::{is_default_track_name, Instrument, LaneKind, NoteId, Song, Tick, Track, DRUM_CHANNEL};
@@ -651,6 +651,27 @@ fn change_length() {
     // on a selection
     let e = drive(song3(), &km(), "a ] ]");
     assert!(e.track().unwrap().notes.iter().all(|n| n.duration >= Tick(3 * G)));
+}
+
+#[test]
+fn nudge_length_moves_off_grid_and_coalesces() {
+    let mut e = Editor::new(song3());
+    let mut k = km();
+    let ev = drive_with(&mut e, &mut k, "Alt+]");
+    assert_eq!(e.track().unwrap().notes[0].duration, Tick(G + 10));
+    assert_eq!(status(&ev), vec!["lengthened 1 note by 10 ticks"]);
+    let ev = drive_with(&mut e, &mut k, "3 Alt+[");
+    assert_eq!(e.track().unwrap().notes[0].duration, Tick(G - 20));
+    assert_eq!(status(&ev), vec!["shortened 1 note by 30 ticks"]);
+    drive_with(&mut e, &mut k, "1 0 0 Alt+[");
+    assert_eq!(e.track().unwrap().notes[0].duration, MIN_NOTE_TICKS);
+    let before = e.song.clone();
+    let err = try_drive_with(&mut e, &mut k, "Alt+[").unwrap_err();
+    assert!(matches!(err, DriveError::Edit { source: EditError::OutOfRange(_), .. }));
+    assert_eq!(e.song, before);
+    assert_eq!(e.undo.undo_depth(), 1, "one coalesced undo step for the whole run");
+    drive_with(&mut e, &mut k, "u");
+    assert_eq!(e.song, song3());
 }
 
 #[test]

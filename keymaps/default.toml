@@ -110,6 +110,8 @@
 # --- length, velocity, timing
 "["           = { cmd = "change_length", delta_steps = -1 }
 "]"           = { cmd = "change_length", delta_steps = 1 }
+"Alt+["       = { cmd = "nudge_length", ticks = -10 }
+"Alt+]"       = { cmd = "nudge_length", ticks = 10 }
 "l"           = { cmd = "set_length", steps = 1 }
 "Shift+l"     = "legato"
 "-"           = { cmd = "nudge_velocity", delta = -5 }

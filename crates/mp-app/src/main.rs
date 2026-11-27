@@ -1029,17 +1029,23 @@ impl App {
                 self.editor.cursor = Cursor { tick: Tick(tick), pitch };
                 self.execute(&Command::InsertNote);
             }
-            RollAction::MoveSelection { grid_steps, semitones } => {
-                if grid_steps != 0 {
-                    let ticks = grid_steps * self.editor.grid_ticks().get() as i64;
-                    self.execute(&Command::NudgeSelected { ticks });
+            RollAction::MoveSelection { ticks, semitones } => {
+                if ticks != 0 {
+                    // Sideways drags move notes a few ticks every frame; auditioning each
+                    // step would retrigger them constantly.
+                    match self.editor.execute(&Command::NudgeSelected { ticks }, None) {
+                        Ok(events) => self.apply_events(
+                            events.into_iter().filter(|e| !matches!(e, EditorEvent::Audition(_))).collect(),
+                        ),
+                        Err(e) => self.status = e.to_string(),
+                    }
                 }
                 if semitones != 0 {
                     self.execute(&Command::TransposeSelected { semitones });
                 }
             }
-            RollAction::ResizeSelection { grid_steps } => {
-                self.execute(&Command::ChangeLength { delta_steps: grid_steps });
+            RollAction::ResizeSelection { ticks } => {
+                self.execute(&Command::NudgeLength { ticks });
             }
             RollAction::BoxSelect { t0, t1, p_lo, p_hi, add } => {
                 self.editor.box_anchor = None;

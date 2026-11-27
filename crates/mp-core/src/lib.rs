@@ -26,7 +26,7 @@ pub use editor::{
     instrument_name, pan_label, pitch_name, Category, Command, Cursor, CycleDir, Dir, EditError, Editor, EditorEvent,
     QuantizeSettings,
     TransportRequest, Unit, ViewRequest, DEFAULT_CURSOR_PITCH, INSERT_VELOCITY, MAX_CHANNEL, MAX_PRESET,
-    MAX_TRACK_VOLUME_PERCENT, PITCH_BEND_NUDGE_SCALE, SUSTAIN_DOWN, SUSTAIN_UP, ZOOM_ROWS_STEP, ZOOM_TIME_STEP,
+    MAX_TRACK_VOLUME_PERCENT, MIN_NOTE_TICKS, PITCH_BEND_NUDGE_SCALE, SUSTAIN_DOWN, SUSTAIN_UP, ZOOM_ROWS_STEP, ZOOM_TIME_STEP,
 };
 pub use keymap::{
     parse_sequence, sequence_to_string, Binding, Key, KeyChord, KeyParseError, Keymap, KeymapError, Mods,

@@ -3,7 +3,7 @@
 //! All editing state lives in the `Editor`; the app applies the actions.
 
 use egui::{Align2, Color32, FontId, Painter, Pos2, Rangef, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
-use mp_core::{percussion_short, pitch_name, Division, Editor, Grid, LaneKind, NoteId, Tick, Track};
+use mp_core::{percussion_short, pitch_name, Division, Editor, Grid, LaneKind, MeterMap, NoteId, Tick, Track, MIN_NOTE_TICKS};
 
 use crate::theme::Theme;
 
@@ -13,11 +13,13 @@ const BLACK_KEYS: [u8; 5] = [1, 3, 6, 8, 10];
 const MIN_GRID_PX: f32 = 5.0;
 /// Grabbing this close to a note's right edge resizes instead of moving.
 const RESIZE_HANDLE_PX: f32 = 7.0;
+/// A dragged note's start (or end, when resizing) sticks to a grid line this close on screen.
+const MAGNET_PX: f32 = 8.0;
 /// Height of the controller-lane strip under the roll when a lane is shown.
 const LANE_STRIP_H: f32 = 90.0;
 
-/// What a mouse gesture asks the app to do. Ticks are absolute; deltas are in
-/// whole grid steps / semitones so drags stay on the grid.
+/// What a mouse gesture asks the app to do. Ticks are absolute; deltas are relative
+/// to the previous action of the same drag.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RollAction {
     /// Click on empty space: move the cursor there (and clear the selection).
@@ -26,10 +28,10 @@ pub enum RollAction {
     ClickNote { id: NoteId, toggle: bool },
     /// Double-click on empty space: insert a note there.
     InsertAt { tick: u64, pitch: u8 },
-    /// Dragging selected notes crossed grid steps / semitone rows.
-    MoveSelection { grid_steps: i64, semitones: i32 },
-    /// Dragging a note's right edge crossed grid steps.
-    ResizeSelection { grid_steps: i32 },
+    /// Dragging selected notes moved them by `ticks` and crossed `semitones` rows.
+    MoveSelection { ticks: i64, semitones: i32 },
+    /// Dragging a note's right edge changed the selection's lengths by `ticks`.
+    ResizeSelection { ticks: i64 },
     /// A rubber-band box: notes starting in [t0, t1) with pitch in [p_lo, p_hi].
     BoxSelect { t0: u64, t1: u64, p_lo: u8, p_hi: u8, add: bool },
     /// Click in the ruler: move the playhead.
@@ -53,8 +55,14 @@ struct Drag {
     kind: DragKind,
     /// Where the pointer went down, in (tick, pitch) space.
     origin: (f64, i32),
-    /// Grid steps / semitones already applied to the selection during this drag.
+    /// Ticks / semitones already applied to the selection during this drag (scrub: the
+    /// last tick seeked to).
     applied: (i64, i32),
+    /// The grabbed note's start (move) or end (resize) when the drag began.
+    anchor: f64,
+    /// Most negative tick delta allowed: keeps notes after tick 0 and the grabbed note
+    /// at least `MIN_NOTE_TICKS` long.
+    min_delta: i64,
     /// Whether Shift was held when the drag started (box select adds).
     add: bool,
 }
@@ -261,7 +269,6 @@ impl RollView {
 
     fn handle_mouse(&mut self, ui: &mut Ui, rect: Rect, area: Rect, editor: &Editor, actions: &mut Vec<RollAction>) {
         let response = ui.allocate_rect(rect, Sense::click_and_drag());
-        let grid = editor.grid_ticks().get().max(1);
         let snap = |tick: f64| editor.grid_floor(Tick(tick.max(0.0) as u64)).get();
 
         if response.hovered() {
@@ -308,23 +315,41 @@ impl RollView {
             let tick = snap(self.tick_at_x(area, pos.x));
             actions.push(RollAction::ScrubStart);
             actions.push(RollAction::SetPlayhead { tick });
-            self.drag = Some(Drag { kind: DragKind::Scrub, origin: (0.0, 0), applied: (tick as i64, 0), add: false });
+            self.drag = Some(Drag {
+                kind: DragKind::Scrub,
+                origin: (0.0, 0),
+                applied: (tick as i64, 0),
+                anchor: 0.0,
+                min_delta: 0,
+                add: false,
+            });
         } else if response.drag_started() && in_area {
             let origin = (self.tick_at_x(area, pos.x), self.pitch_at_y(area, pos.y));
-            let kind = match self.note_hit(area, editor, pos) {
-                Some((id, on_edge)) => {
-                    if !editor.selection.contains(&id) {
-                        actions.push(RollAction::ClickNote { id, toggle: false });
+            let hit = self.note_hit(area, editor, pos).and_then(|(id, on_edge)| {
+                let track = editor.track()?;
+                Some((*track.note(id)?, on_edge, track))
+            });
+            let (kind, anchor, min_delta) = match hit {
+                Some((note, on_edge, track)) => {
+                    let selected = editor.selection.contains(&note.id);
+                    if !selected {
+                        actions.push(RollAction::ClickNote { id: note.id, toggle: false });
                     }
                     if on_edge {
-                        DragKind::Resize
+                        let shortest = note.duration.get() as i64 - MIN_NOTE_TICKS.get() as i64;
+                        (DragKind::Resize, note.end().get() as f64, -shortest.max(0))
                     } else {
-                        DragKind::Move
+                        let earliest = if selected {
+                            track.notes.iter().filter(|n| editor.selection.contains(&n.id)).map(|n| n.start.get()).min()
+                        } else {
+                            None
+                        };
+                        (DragKind::Move, note.start.get() as f64, -(earliest.unwrap_or(note.start.get()) as i64))
                     }
                 }
-                None => DragKind::Box,
+                None => (DragKind::Box, 0.0, 0),
             };
-            self.drag = Some(Drag { kind, origin, applied: (0, 0), add: shift });
+            self.drag = Some(Drag { kind, origin, applied: (0, 0), anchor, min_delta, add: shift });
         }
 
         if response.dragged() {
@@ -341,17 +366,21 @@ impl RollView {
                         }
                     }
                     DragKind::Move | DragKind::Resize => {
-                        let steps = ((tick - drag.origin.0) / grid as f64).round() as i64;
+                        let song = &editor.song;
+                        let raw = drag.anchor + (tick - drag.origin.0);
+                        let lines = self.visible_lines(editor, Tick(raw.max(0.0) as u64));
+                        let target = magnet(raw, lines, song.ppq, &song.meter_map, self.px_per_tick);
+                        let ticks = ((target - drag.anchor).round() as i64).max(drag.min_delta);
                         let semis = if drag.kind == DragKind::Move { pitch - drag.origin.1 } else { 0 };
-                        let d_steps = steps - drag.applied.0;
+                        let d_ticks = ticks - drag.applied.0;
                         let d_semis = semis - drag.applied.1;
-                        if d_steps != 0 || d_semis != 0 {
+                        if d_ticks != 0 || d_semis != 0 {
                             if drag.kind == DragKind::Move {
-                                actions.push(RollAction::MoveSelection { grid_steps: d_steps, semitones: d_semis });
+                                actions.push(RollAction::MoveSelection { ticks: d_ticks, semitones: d_semis });
                             } else {
-                                actions.push(RollAction::ResizeSelection { grid_steps: d_steps as i32 });
+                                actions.push(RollAction::ResizeSelection { ticks: d_ticks });
                             }
-                            drag.applied = (steps, semis);
+                            drag.applied = (ticks, semis);
                         }
                     }
                     DragKind::Box => {
@@ -456,13 +485,22 @@ impl RollView {
         }
     }
 
+    /// The lines `draw_grid_lines` draws around `tick`: the grid, or beats when grid
+    /// lines would sit too close together to see.
+    fn visible_lines(&self, editor: &Editor, tick: Tick) -> Grid {
+        if editor.grid_ticks().get() as f32 * self.px_per_tick >= MIN_GRID_PX {
+            editor.grid
+        } else {
+            Grid::plain(beat_division(editor.song.meter_map.meter_at(tick).1))
+        }
+    }
+
     fn draw_grid_lines(&self, painter: &Painter, area: Rect, editor: &Editor, theme: &Theme) {
         let song = &editor.song;
         let (ppq, meters) = (song.ppq, &song.meter_map);
         let left = Tick(self.left_tick.max(0.0) as u64);
         let right = Tick(self.tick_at_right(area).max(0.0) as u64);
-        let dense = editor.grid_ticks().get() as f32 * self.px_per_tick < MIN_GRID_PX;
-        let lines = |tick: Tick| if dense { Grid::plain(beat_division(meters.meter_at(tick).1)) } else { editor.grid };
+        let lines = |tick: Tick| self.visible_lines(editor, tick);
         let mut tick = lines(left).floor(left, ppq, meters);
         while tick <= right {
             let (bar_start, _) = meters.bar_span_at(ppq, tick);
@@ -651,4 +689,70 @@ pub(crate) fn draw_playhead_marker(painter: &Painter, x: f32, bottom: f32, color
 /// The note value of one beat in a `x/denominator` meter.
 fn beat_division(denominator: u8) -> Division {
     Division::from_denominator(u32::from(denominator)).unwrap_or(Division::Quarter)
+}
+
+/// Pulls `tick` onto the nearest of `lines` when that line is within `MAGNET_PX` on
+/// screen; otherwise leaves it where it is.
+fn magnet(tick: f64, lines: Grid, ppq: u32, meters: &MeterMap, px_per_tick: f32) -> f64 {
+    let at = Tick(tick.max(0.0) as u64);
+    let before = lines.floor(at, ppq, meters).get() as f64;
+    let after = lines.next_line(at, ppq, meters).get() as f64;
+    let line = if tick - before <= after - tick { before } else { after };
+    if ((line - tick) * f64::from(px_per_tick)).abs() <= f64::from(MAGNET_PX) {
+        line
+    } else {
+        tick
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SIXTEENTH: Grid = Grid::plain(Division::Sixteenth);
+
+    fn four_four(tick: f64, lines: Grid, px_per_tick: f32) -> f64 {
+        magnet(tick, lines, 960, &MeterMap::constant(4, 4), px_per_tick)
+    }
+
+    #[test]
+    fn magnet_sticks_only_near_a_line() {
+        // 0.1 px per tick: 8 px is 80 ticks.
+        assert_eq!(four_four(1000.0, SIXTEENTH, 0.1), 960.0);
+        assert_eq!(four_four(1050.0, SIXTEENTH, 0.1), 1050.0);
+        assert_eq!(four_four(1150.0, SIXTEENTH, 0.1), 1200.0);
+        assert_eq!(four_four(0.0, SIXTEENTH, 0.1), 0.0);
+    }
+
+    #[test]
+    fn zooming_in_shrinks_the_sticky_zone() {
+        assert_eq!(four_four(1000.0, SIXTEENTH, 0.1), 960.0);
+        assert_eq!(four_four(1000.0, SIXTEENTH, 1.0), 1000.0);
+        assert_eq!(four_four(965.0, SIXTEENTH, 1.0), 960.0);
+    }
+
+    #[test]
+    fn magnet_follows_triplet_lines() {
+        // 1/8T at 960 PPQ is 320 ticks.
+        let triplet = Grid { base: Division::Eighth, modifier: mp_core::GridModifier::Triplet };
+        assert_eq!(four_four(650.0, triplet, 0.1), 640.0);
+        assert_eq!(four_four(940.0, triplet, 0.1), 960.0);
+    }
+
+    #[test]
+    fn magnet_lines_restart_at_each_bar() {
+        // Dotted quarters are 1440 ticks, which doesn't divide a 3840-tick 4/4 bar, so
+        // bar 2's lines are 3840 and 5280 rather than multiples of 1440 from zero.
+        let dotted = Grid { base: Division::Quarter, modifier: mp_core::GridModifier::Dotted };
+        assert_eq!(four_four(5300.0, dotted, 0.1), 5280.0);
+    }
+
+    #[test]
+    fn zoomed_out_lines_follow_beats() {
+        let editor = Editor::new(mp_core::Song::new_empty());
+        let near = RollView { px_per_tick: 0.1, ..RollView::default() };
+        assert_eq!(near.visible_lines(&editor, Tick::ZERO), editor.grid);
+        let far = RollView { px_per_tick: 0.01, ..RollView::default() };
+        assert_eq!(far.visible_lines(&editor, Tick::ZERO), Grid::plain(Division::Quarter));
+    }
 }

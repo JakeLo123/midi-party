@@ -178,6 +178,9 @@ pub enum Command {
     /// Lengthen (positive) or shorten (negative) the selected notes by `delta_steps` grid
     /// steps, never below a quarter of a grid step. Needs notes. Count: multiplier.
     ChangeLength { delta_steps: i32 },
+    /// Lengthen (positive) or shorten (negative) the selected notes by `ticks`, off the
+    /// grid, never below [`MIN_NOTE_TICKS`](super::MIN_NOTE_TICKS). Needs notes. Count: multiplier.
+    NudgeLength { ticks: i64 },
     /// Set the length of the selected notes to `steps` grid steps (at least 1).
     /// Needs notes. Count: overrides `steps`.
     SetLength { steps: u32 },
@@ -504,6 +507,7 @@ impl Command {
             Command::MoveSelected { .. } => "move_selected",
             Command::NudgeSelected { .. } => "nudge_selected",
             Command::ChangeLength { .. } => "change_length",
+            Command::NudgeLength { .. } => "nudge_length",
             Command::SetLength { .. } => "set_length",
             Command::Legato => "legato",
             Command::NudgeVelocity { .. } => "nudge_velocity",
@@ -619,6 +623,13 @@ impl Command {
             Command::DeleteSelected => "Delete selected notes (or the note under the cursor)".to_string(),
             Command::MoveSelected { dir, unit } => format!("Move selected notes {dir} one {unit}"),
             Command::NudgeSelected { ticks } => format!("Nudge selected notes {ticks:+} ticks"),
+            Command::NudgeLength { ticks } => {
+                if *ticks >= 0 {
+                    format!("Lengthen selected notes by {ticks} ticks")
+                } else {
+                    format!("Shorten selected notes by {} ticks", ticks.unsigned_abs())
+                }
+            }
             Command::ChangeLength { delta_steps } => {
                 if *delta_steps >= 0 {
                     format!("Lengthen selected notes by {delta_steps} grid step(s)")
@@ -797,6 +808,7 @@ impl Command {
             | Command::MoveSelected { .. }
             | Command::NudgeSelected { .. }
             | Command::ChangeLength { .. }
+            | Command::NudgeLength { .. }
             | Command::SetLength { .. }
             | Command::Legato
             | Command::NudgeVelocity { .. }
@@ -897,6 +909,7 @@ impl Command {
             Command::MoveSelected { dir: Dir::Right, unit: Unit::Grid },
             Command::NudgeSelected { ticks: 10 },
             Command::ChangeLength { delta_steps: 1 },
+            Command::NudgeLength { ticks: 10 },
             Command::SetLength { steps: 1 },
             Command::Legato,
             Command::NudgeVelocity { delta: 5 },
