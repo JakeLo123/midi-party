@@ -11,6 +11,7 @@ mod config;
 mod dialogs;
 mod input;
 mod instrument_picker;
+mod quantize_panel;
 mod keymap_editor;
 #[cfg(target_os = "macos")]
 mod menu;
@@ -30,8 +31,9 @@ use egui::{Rect, RichText, Stroke};
 use mp_audio::render::{render_song, write_audio_file, RenderOptions};
 use mp_audio::{render_song_from, SoundFontSynth, Synth};
 use mp_core::{
-    cmdline, default_keymap, feed_one, midi_file, pitch_name, project, try_drive_with, Command, Cursor, DriveError,
-    Editor, EditorEvent, KeyChord, Keymap, LoopRegion, Song, Tick, TransportRequest, ViewRequest, DEFAULT_KEYMAP_TOML,
+    cmdline, default_keymap, feed_one, midi_file, pitch_name, project, try_drive_with, Command, Cursor, Division,
+    DriveError, Editor, EditorEvent, Grid, KeyChord, Keymap, LoopRegion, Song, Tick, TransportRequest, ViewRequest,
+    DEFAULT_KEYMAP_TOML,
 };
 use rustysynth::SoundFont;
 
@@ -41,6 +43,7 @@ use crate::config::{ConfigEvent, ConfigWatcher};
 use crate::dialogs::Unsaved;
 use crate::input::{InputState, KeyRepeat};
 use crate::instrument_picker::{Entry, InstrumentPicker, Outcome};
+use crate::quantize_panel::QuantizePanel;
 use crate::keymap_editor::KeymapEditor;
 use crate::piano_roll::{RollAction, RollView};
 use crate::theme::Theme;
@@ -306,6 +309,7 @@ struct App {
     show_cheat_sheet: bool,
     keymap_editor: KeymapEditor,
     picker: InstrumentPicker,
+    quantize_panel: QuantizePanel,
     /// Scroll the cursor into view once the roll has been laid out.
     needs_scroll: bool,
     /// The `:` command line while it is open.
@@ -421,6 +425,7 @@ impl App {
             show_cheat_sheet: false,
             keymap_editor: KeymapEditor::default(),
             picker: InstrumentPicker::default(),
+            quantize_panel: QuantizePanel::default(),
             needs_scroll: true,
             cmdline: None,
             track_rename: None,
@@ -797,6 +802,7 @@ impl App {
         self.show_cheat_sheet = false;
         self.keymap_editor.open = false;
         self.picker.open = false;
+        self.close_quantize_panel(true);
         self.track_rename = None;
         self.value_entry = None;
     }
@@ -813,7 +819,11 @@ impl App {
 
     /// Handles one keypress (or a menu click standing in for one), written in keymap syntax.
     fn handle_key(&mut self, text: &str, ctx: &egui::Context) {
-        let typing = self.picker.open || self.cmdline.is_some() || self.track_rename.is_some() || self.value_entry.is_some();
+        let typing = self.picker.open
+            || self.quantize_panel.open
+            || self.cmdline.is_some()
+            || self.track_rename.is_some()
+            || self.value_entry.is_some();
         if typing && APP_CHORDS.contains(&text) {
             self.finish_rename();
             self.finish_entry();
@@ -833,6 +843,11 @@ impl App {
                     self.execute(&entry.command());
                 }
             }
+            return;
+        }
+        if self.quantize_panel.open {
+            let outcome = self.quantize_panel.handle_chord(text);
+            self.apply_quantize_outcome(outcome);
             return;
         }
         if self.keymap_editor.open {
@@ -902,6 +917,7 @@ impl App {
                     }
                 }
                 EditorEvent::OpenInstrumentPicker => self.open_picker(self.editor.track_index),
+                EditorEvent::OpenQuantizePanel => self.open_quantize_panel(),
                 EditorEvent::EditTrackName => self.start_rename(self.editor.track_index),
                 EditorEvent::View(ViewRequest::ZoomTime(factor)) => self.view.zoom_time(factor),
                 EditorEvent::View(ViewRequest::ZoomRows(factor)) => self.view.zoom_rows(factor),
@@ -919,6 +935,40 @@ impl App {
         let lists = self.audio.as_mut().ok().map(|a| a.presets_for(&t));
         self.close_overlays();
         self.picker.open(track, &t, lists);
+    }
+
+    fn open_quantize_panel(&mut self) {
+        self.close_overlays();
+        if let Err(e) = self.editor.begin_quantize_preview() {
+            self.status = e.to_string();
+            return;
+        }
+        let settings = self.quantize_panel.open(self.editor.quantize, self.editor.grid);
+        let events = self.editor.preview_quantize(settings);
+        self.apply_events(events);
+    }
+
+    fn apply_quantize_outcome(&mut self, outcome: quantize_panel::Outcome) {
+        match outcome {
+            quantize_panel::Outcome::Nothing => {}
+            quantize_panel::Outcome::Changed(settings) => {
+                let events = self.editor.preview_quantize(settings);
+                self.apply_events(events);
+            }
+            quantize_panel::Outcome::Apply => self.close_quantize_panel(true),
+            quantize_panel::Outcome::Cancel => self.close_quantize_panel(false),
+            quantize_panel::Outcome::TogglePlay => self.execute(&Command::TogglePlay),
+        }
+    }
+
+    /// Closes the quantize panel, keeping its result as one undo step or putting the
+    /// notes back.
+    fn close_quantize_panel(&mut self, keep: bool) {
+        self.quantize_panel.open = false;
+        if self.editor.quantize_previewing() {
+            let events = self.editor.end_quantize_preview(keep);
+            self.apply_events(events);
+        }
     }
 
     fn preview_entry(&mut self, entry: &Entry) {
@@ -945,7 +995,7 @@ impl App {
     fn apply_roll_action(&mut self, action: RollAction) {
         self.finish_rename();
         self.finish_entry();
-        if self.cmdline.is_some() || self.show_cheat_sheet || self.picker.open {
+        if self.cmdline.is_some() || self.show_cheat_sheet || self.picker.open || self.quantize_panel.open {
             return;
         }
         match action {
@@ -1026,7 +1076,7 @@ impl App {
         }
         self.finish_rename();
         self.finish_entry();
-        if self.cmdline.is_some() || self.show_cheat_sheet || self.picker.open {
+        if self.cmdline.is_some() || self.show_cheat_sheet || self.picker.open || self.quantize_panel.open {
             return;
         }
         if self.apply_time_action(&action) {
@@ -1545,8 +1595,10 @@ impl App {
     }
 
     /// One line of cells separated by thin rules: where the cursor is, then the
-    /// editing context, the latest message on the right.
-    fn draw_status_bar(&self, ui: &mut egui::Ui) {
+    /// editing context, the latest message on the right. Returns a grid picked from
+    /// the grid cell's menu.
+    fn draw_status_bar(&self, ui: &mut egui::Ui) -> Option<Grid> {
+        let mut picked_grid = None;
         let theme = &self.theme;
         let mono = theme.font(theme.font_size);
         let label_font = theme.font(theme.font_size - 3.0);
@@ -1590,7 +1642,33 @@ impl App {
             }
             cell(ui, "", text(song.meter_map.bar_beat_of(song.ppq, e.cursor.tick).to_string(), "status_fg"));
             cell(ui, "", text(format!("{} {}", pitch_name(e.cursor.pitch), e.cursor.pitch), "status_fg"));
-            cell(ui, "grid", text(e.grid.to_string(), "status_fg"));
+            ui.add_space(8.0);
+            ui.label(RichText::new("grid").font(label_font.clone()).color(dim));
+            ui.add_space(5.0);
+            let grid_cell = ui
+                .add(egui::Label::new(text(e.grid.to_string(), "status_fg")).sense(egui::Sense::click()))
+                .on_hover_text("Pick a grid (Ctrl+g switches triplet)");
+            let (caret_rect, _) = ui.allocate_exact_size(egui::vec2(14.0, grid_cell.rect.height()), egui::Sense::hover());
+            let caret = caret_rect.center() + egui::vec2(2.0, 0.0);
+            let ink = theme.color(if grid_cell.hovered() { "status_fg" } else { "status_dim" });
+            ui.painter().add(egui::Shape::convex_polygon(
+                vec![caret + egui::vec2(-4.0, -2.0), caret + egui::vec2(4.0, -2.0), caret + egui::vec2(0.0, 3.0)],
+                ink,
+                Stroke::NONE,
+            ));
+            egui::Popup::menu(&grid_cell).show(|ui| {
+                ui.style_mut().override_font_id = Some(theme.font(theme.font_size - 1.0));
+                let offered = Grid::all()
+                    .into_iter()
+                    .filter(|g| !matches!(g.base, Division::Whole | Division::SixtyFourth) || *g == e.grid);
+                for grid in offered {
+                    if ui.selectable_label(grid == e.grid, grid.to_string()).clicked() {
+                        picked_grid = Some(grid);
+                    }
+                }
+            });
+            ui.add_space(8.0);
+            ui.painter().vline(ui.cursor().left().round() + 0.5, ui.max_rect().y_range(), separator);
             let track_name = e.track().map(|t| t.name.as_str()).unwrap_or("-");
             cell(ui, "track", text(format!("{}/{} {}", e.track_index + 1, song.tracks.len(), track_name), "status_fg"));
             cell(ui, "reverb", text(format!("{}%", (song.master_reverb * 100.0).round() as i32), "status_fg"));
@@ -1602,6 +1680,7 @@ impl App {
                 ui.add(egui::Label::new(RichText::new(self.status.clone()).font(theme.font(theme.font_size - 1.0)).color(dim)).truncate());
             });
         });
+        picked_grid
     }
 }
 
@@ -1693,9 +1772,13 @@ impl eframe::App for App {
         }
 
         let status_bg = self.theme.color("status_bg");
-        egui::Panel::bottom("status")
+        let picked_grid = egui::Panel::bottom("status")
             .frame(egui::Frame::NONE.fill(status_bg).inner_margin(egui::Margin::symmetric(0, 5)))
-            .show(ui, |ui| self.draw_status_bar(ui));
+            .show(ui, |ui| self.draw_status_bar(ui))
+            .inner;
+        if let Some(grid) = picked_grid {
+            self.execute(&Command::SetGrid { grid });
+        }
         let mut transport_actions = Vec::new();
         egui::Panel::top("transport")
             .frame(egui::Frame::NONE.fill(status_bg))
@@ -1779,6 +1862,10 @@ impl eframe::App for App {
         }
         if self.picker.open {
             self.picker.draw(&ctx, &self.theme);
+        }
+        if self.quantize_panel.open {
+            let outcome = self.quantize_panel.draw(&ctx, &self.theme);
+            self.apply_quantize_outcome(outcome);
         }
     }
 }

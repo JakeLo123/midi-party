@@ -3,7 +3,7 @@
 //! All editing state lives in the `Editor`; the app applies the actions.
 
 use egui::{Align2, Color32, FontId, Painter, Pos2, Rangef, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
-use mp_core::{percussion_short, pitch_name, Editor, LaneKind, NoteId, Tick, Track, MIN_NOTE_TICKS};
+use mp_core::{percussion_short, pitch_name, Division, Editor, Grid, LaneKind, MeterMap, NoteId, Tick, Track, MIN_NOTE_TICKS};
 
 use crate::theme::Theme;
 
@@ -269,8 +269,7 @@ impl RollView {
 
     fn handle_mouse(&mut self, ui: &mut Ui, rect: Rect, area: Rect, editor: &Editor, actions: &mut Vec<RollAction>) {
         let response = ui.allocate_rect(rect, Sense::click_and_drag());
-        let grid = editor.grid_ticks().get().max(1);
-        let snap = |tick: f64| (tick as u64 / grid) * grid;
+        let snap = |tick: f64| editor.grid_floor(Tick(tick.max(0.0) as u64)).get();
 
         if response.hovered() {
             let (scroll, zoom, cmd) = ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta(), i.modifiers.mac_cmd));
@@ -367,8 +366,10 @@ impl RollView {
                         }
                     }
                     DragKind::Move | DragKind::Resize => {
-                        let step = self.visible_line_step(editor);
-                        let target = magnet(drag.anchor + (tick - drag.origin.0), step, self.px_per_tick);
+                        let song = &editor.song;
+                        let raw = drag.anchor + (tick - drag.origin.0);
+                        let lines = self.visible_lines(editor, Tick(raw.max(0.0) as u64));
+                        let target = magnet(raw, lines, song.ppq, &song.meter_map, self.px_per_tick);
                         let ticks = ((target - drag.anchor).round() as i64).max(drag.min_delta);
                         let semis = if drag.kind == DragKind::Move { pitch - drag.origin.1 } else { 0 };
                         let d_ticks = ticks - drag.applied.0;
@@ -484,38 +485,36 @@ impl RollView {
         }
     }
 
-    /// Spacing of the lines `draw_grid_lines` draws: the grid, or beats when grid lines
-    /// would sit too close together to see.
-    fn visible_line_step(&self, editor: &Editor) -> u64 {
-        let grid = editor.grid_ticks().get().max(1);
-        if grid as f32 * self.px_per_tick >= MIN_GRID_PX {
-            grid
+    /// The lines `draw_grid_lines` draws around `tick`: the grid, or beats when grid
+    /// lines would sit too close together to see.
+    fn visible_lines(&self, editor: &Editor, tick: Tick) -> Grid {
+        if editor.grid_ticks().get() as f32 * self.px_per_tick >= MIN_GRID_PX {
+            editor.grid
         } else {
-            let song = &editor.song;
-            song.meter_map.beat_ticks_at(song.ppq, Tick(self.left_tick as u64)).get().max(1)
+            Grid::plain(beat_division(editor.song.meter_map.meter_at(tick).1))
         }
     }
 
     fn draw_grid_lines(&self, painter: &Painter, area: Rect, editor: &Editor, theme: &Theme) {
         let song = &editor.song;
-        let grid = editor.grid_ticks().get().max(1);
-        let right = self.tick_at_right(area) as u64 + grid;
-        let left = self.left_tick as u64;
-        let beat = song.meter_map.beat_ticks_at(song.ppq, Tick(left)).get().max(1);
-        let bar = song.meter_map.bar_ticks_at(song.ppq, Tick(left)).get().max(1);
-        let step = self.visible_line_step(editor);
-        let mut tick = (left / step) * step;
+        let (ppq, meters) = (song.ppq, &song.meter_map);
+        let left = Tick(self.left_tick.max(0.0) as u64);
+        let right = Tick(self.tick_at_right(area).max(0.0) as u64);
+        let lines = |tick: Tick| self.visible_lines(editor, tick);
+        let mut tick = lines(left).floor(left, ppq, meters);
         while tick <= right {
-            let color = if tick.is_multiple_of(bar) {
+            let (bar_start, _) = meters.bar_span_at(ppq, tick);
+            let beat = meters.beat_ticks_at(ppq, tick).get().max(1);
+            let color = if tick == bar_start {
                 "bar_line"
-            } else if tick.is_multiple_of(beat) {
+            } else if (tick.get() - bar_start.get()).is_multiple_of(beat) {
                 "beat_line"
             } else {
                 "grid"
             };
-            let x = self.x_of(area, tick as f64);
+            let x = self.x_of(area, tick.get() as f64);
             painter.vline(x, area.y_range(), Stroke::new(1.0, theme.color(color)));
-            tick += step;
+            tick = lines(tick).next_line(tick, ppq, meters);
         }
     }
 
@@ -687,11 +686,18 @@ pub(crate) fn draw_playhead_marker(painter: &Painter, x: f32, bottom: f32, color
     painter.add(egui::Shape::convex_polygon(points, color, Stroke::NONE));
 }
 
-/// Pulls `tick` onto the nearest line `step` ticks apart when that line is within
-/// `MAGNET_PX` on screen; otherwise leaves it where it is.
-fn magnet(tick: f64, step: u64, px_per_tick: f32) -> f64 {
-    let step = step.max(1) as f64;
-    let line = (tick / step).round() * step;
+/// The note value of one beat in a `x/denominator` meter.
+fn beat_division(denominator: u8) -> Division {
+    Division::from_denominator(u32::from(denominator)).unwrap_or(Division::Quarter)
+}
+
+/// Pulls `tick` onto the nearest of `lines` when that line is within `MAGNET_PX` on
+/// screen; otherwise leaves it where it is.
+fn magnet(tick: f64, lines: Grid, ppq: u32, meters: &MeterMap, px_per_tick: f32) -> f64 {
+    let at = Tick(tick.max(0.0) as u64);
+    let before = lines.floor(at, ppq, meters).get() as f64;
+    let after = lines.next_line(at, ppq, meters).get() as f64;
+    let line = if tick - before <= after - tick { before } else { after };
     if ((line - tick) * f64::from(px_per_tick)).abs() <= f64::from(MAGNET_PX) {
         line
     } else {
@@ -703,28 +709,50 @@ fn magnet(tick: f64, step: u64, px_per_tick: f32) -> f64 {
 mod tests {
     use super::*;
 
+    const SIXTEENTH: Grid = Grid::plain(Division::Sixteenth);
+
+    fn four_four(tick: f64, lines: Grid, px_per_tick: f32) -> f64 {
+        magnet(tick, lines, 960, &MeterMap::constant(4, 4), px_per_tick)
+    }
+
     #[test]
     fn magnet_sticks_only_near_a_line() {
         // 0.1 px per tick: 8 px is 80 ticks.
-        assert_eq!(magnet(1000.0, 240, 0.1), 960.0);
-        assert_eq!(magnet(1050.0, 240, 0.1), 1050.0);
-        assert_eq!(magnet(1150.0, 240, 0.1), 1200.0);
-        assert_eq!(magnet(0.0, 240, 0.1), 0.0);
+        assert_eq!(four_four(1000.0, SIXTEENTH, 0.1), 960.0);
+        assert_eq!(four_four(1050.0, SIXTEENTH, 0.1), 1050.0);
+        assert_eq!(four_four(1150.0, SIXTEENTH, 0.1), 1200.0);
+        assert_eq!(four_four(0.0, SIXTEENTH, 0.1), 0.0);
     }
 
     #[test]
     fn zooming_in_shrinks_the_sticky_zone() {
-        assert_eq!(magnet(1000.0, 240, 0.1), 960.0);
-        assert_eq!(magnet(1000.0, 240, 1.0), 1000.0);
-        assert_eq!(magnet(965.0, 240, 1.0), 960.0);
+        assert_eq!(four_four(1000.0, SIXTEENTH, 0.1), 960.0);
+        assert_eq!(four_four(1000.0, SIXTEENTH, 1.0), 1000.0);
+        assert_eq!(four_four(965.0, SIXTEENTH, 1.0), 960.0);
+    }
+
+    #[test]
+    fn magnet_follows_triplet_lines() {
+        // 1/8T at 960 PPQ is 320 ticks.
+        let triplet = Grid { base: Division::Eighth, modifier: mp_core::GridModifier::Triplet };
+        assert_eq!(four_four(650.0, triplet, 0.1), 640.0);
+        assert_eq!(four_four(940.0, triplet, 0.1), 960.0);
+    }
+
+    #[test]
+    fn magnet_lines_restart_at_each_bar() {
+        // Dotted quarters are 1440 ticks, which doesn't divide a 3840-tick 4/4 bar, so
+        // bar 2's lines are 3840 and 5280 rather than multiples of 1440 from zero.
+        let dotted = Grid { base: Division::Quarter, modifier: mp_core::GridModifier::Dotted };
+        assert_eq!(four_four(5300.0, dotted, 0.1), 5280.0);
     }
 
     #[test]
     fn zoomed_out_lines_follow_beats() {
         let editor = Editor::new(mp_core::Song::new_empty());
         let near = RollView { px_per_tick: 0.1, ..RollView::default() };
-        assert_eq!(near.visible_line_step(&editor), editor.grid_ticks().get());
+        assert_eq!(near.visible_lines(&editor, Tick::ZERO), editor.grid);
         let far = RollView { px_per_tick: 0.01, ..RollView::default() };
-        assert_eq!(far.visible_line_step(&editor), 960);
+        assert_eq!(far.visible_lines(&editor, Tick::ZERO), Grid::plain(Division::Quarter));
     }
 }

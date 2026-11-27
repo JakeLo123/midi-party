@@ -7,14 +7,13 @@ use std::path::PathBuf;
 
 use crate::cmdline;
 use crate::editor::{
-    Command, Cursor, CycleDir, Dir, EditError, EditorEvent, TransportRequest, Unit, ViewRequest, MIN_NOTE_TICKS,
-    ZOOM_ROWS_STEP,
-    ZOOM_TIME_STEP,
+    Command, Cursor, CycleDir, Dir, EditError, EditorEvent, QuantizeSettings, TransportRequest, Unit, ViewRequest,
+    MIN_NOTE_TICKS, ZOOM_ROWS_STEP, ZOOM_TIME_STEP,
 };
 use crate::keymap::{parse_sequence, Keymap, Resolution};
 use crate::song::{is_default_track_name, Instrument, LaneKind, NoteId, Song, Tick, Track, DRUM_CHANNEL};
 use crate::test_harness::{default_keymap, drive, drive_with, try_drive_with, DriveError, DEFAULT_KEYMAP_TOML};
-use crate::time::{Division, Grid, GridModifier};
+use crate::time::{Division, Grid, GridModifier, MeterMap};
 use crate::Editor;
 
 const G: u64 = 240; // one 1/16 grid step at 960 PPQ
@@ -168,7 +167,9 @@ fn default_keymap_loads_and_every_binding_is_a_real_command() {
     assert_eq!(bound(&keymap, "Cmd+Shift+z"), Command::Redo);
     // the keys the plan promises
     for (cmd, key) in [
-        (Command::Quantize { grid: None, strength: 100, swing: 0 }, "q"),
+        (Command::OpenQuantizePanel, "q"),
+        (Command::SpreadEvenly, "e"),
+        (Command::ToggleTriplet, "Ctrl+g"),
         (Command::Legato, "Shift+l"),
         (Command::Humanize { velocity: 8, timing: 10 }, "h"),
         (Command::InsertChord { intervals: vec![0, 4, 7] }, "Shift+n"),
@@ -1288,11 +1289,12 @@ fn quantize_starts() {
     let mut e = Editor::new(chords());
     let mut k = km();
     let before = e.song.clone();
-    let ev = drive_with(&mut e, &mut k, "a q");
+    drive_with(&mut e, &mut k, "a");
+    let ev = quantize(&mut e);
     assert_eq!(starts(&e)[6], 2880, "the off-grid B4 snaps to the 1/16 grid");
     assert_eq!(last_status(&ev), "quantized 1 of 9 notes to 1/16");
     assert!(has_song_changed(&ev));
-    let ev = drive_with(&mut e, &mut k, "q");
+    let ev = quantize(&mut e);
     assert_eq!(last_status(&ev), "already on the 1/16 grid");
     assert!(!has_song_changed(&ev));
     assert_eq!(e.undo.undo_depth(), 1);
@@ -1301,41 +1303,161 @@ fn quantize_starts() {
     // strength moves part of the way; an explicit grid overrides the editor's
     let mut e = Editor::new(chords());
     drive_with(&mut e, &mut k, "a");
-    let ev = e.execute(&Command::Quantize { grid: None, strength: 50, swing: 0 }, None).unwrap();
+    let ev = e.execute(&Command::Quantize { grid: None, strength: 50, swing: None }, None).unwrap();
     assert_eq!(starts(&e)[6], 2890);
     assert_eq!(last_status(&ev), "quantized 1 of 9 notes to 1/16 at 50%");
     let mut e = Editor::new(chords());
     drive_with(&mut e, &mut k, "a");
-    e.execute(&Command::Quantize { grid: Some(Grid::plain(Division::Quarter)), strength: 100, swing: 0 }, None).unwrap();
+    e.execute(&Command::Quantize { grid: Some(Grid::plain(Division::Quarter)), strength: 100, swing: None }, None).unwrap();
     assert_eq!(starts(&e), vec![0, 0, 0, 960, 1920, 1920, 2880, 3840, 3840]);
     assert_eq!(e.grid, Grid::default(), "the editor grid is untouched");
 }
 
 #[test]
-fn quantize_uses_the_editor_swing_when_its_own_is_zero() {
+fn quantize_uses_the_editor_swing_when_it_has_none() {
     let mut s = Song::new_empty();
     let n = s.new_note(Tick(500), Tick(G), 60, 100);
     s.tracks[0].insert_note(n);
     let mut e = Editor::new(s.clone());
     let mut k = km();
-    drive_with(&mut e, &mut k, "a Shift+g q");
+    drive_with(&mut e, &mut k, "a Shift+g");
+    quantize(&mut e);
     assert_eq!(e.grid, Grid::plain(Division::Eighth));
     assert_eq!(starts(&e), vec![480], "straight");
     drive_with(&mut e, &mut k, "u");
     let ev = e.execute(&Command::SetSwing { percent: 100 }, None).unwrap();
-    assert_eq!(e.swing, 100);
+    assert_eq!(e.quantize.swing, 100);
     assert_eq!(status(&ev), vec!["swing 100%"]);
     assert_eq!(e.undo.undo_depth(), 0, "a setting, not an edit");
-    let ev = drive_with(&mut e, &mut k, "q");
+    let ev = quantize(&mut e);
     assert_eq!(starts(&e), vec![720], "swung off-step");
     assert_eq!(last_status(&ev), "quantized 1 of 1 note to 1/8 with 100% swing");
     // an explicit swing wins over the setting; percentages clamp to 100
     let mut e = Editor::new(s);
     e.execute(&Command::SelectAll, None).unwrap();
     e.execute(&Command::SetSwing { percent: 250 }, None).unwrap();
-    assert_eq!(e.swing, 100);
-    e.execute(&Command::Quantize { grid: Some(Grid::plain(Division::Eighth)), strength: 100, swing: 1 }, None).unwrap();
+    assert_eq!(e.quantize.swing, 100);
+    e.execute(&Command::Quantize { grid: Some(Grid::plain(Division::Eighth)), strength: 100, swing: Some(1) }, None).unwrap();
     assert_eq!(starts(&e), vec![482], "1% swing: the off-step is delayed by 1% of half a step");
+}
+
+fn quantize(e: &mut Editor) -> Vec<EditorEvent> {
+    e.execute(&Command::Quantize { grid: None, strength: 100, swing: None }, None).unwrap()
+}
+
+#[test]
+fn an_explicit_zero_swing_quantizes_straight() {
+    let mut s = Song::new_empty();
+    let n = s.new_note(Tick(500), Tick(G), 60, 100);
+    s.tracks[0].insert_note(n);
+    let mut e = Editor::new(s);
+    e.execute(&Command::SelectAll, None).unwrap();
+    e.execute(&Command::SetSwing { percent: 50 }, None).unwrap();
+    let ev = e.execute(&Command::Quantize { grid: Some(Grid::plain(Division::Eighth)), strength: 100, swing: Some(0) }, None).unwrap();
+    assert_eq!(starts(&e), vec![480]);
+    assert_eq!(last_status(&ev), "quantized 1 of 1 note to 1/8");
+}
+
+#[test]
+fn quantize_preview_cancel_puts_notes_back() {
+    let mut e = Editor::new(chords());
+    let mut k = km();
+    let before = e.song.clone();
+    drive_with(&mut e, &mut k, "a");
+    let ev = drive_with(&mut e, &mut k, "q");
+    assert!(ev.contains(&EditorEvent::OpenQuantizePanel));
+    e.begin_quantize_preview().unwrap();
+    assert!(e.quantize_previewing());
+    let settings = QuantizeSettings { grid: Some(Grid::plain(Division::Quarter)), strength: 100, swing: 0 };
+    let ev = e.preview_quantize(settings);
+    assert!(has_song_changed(&ev));
+    assert_eq!(starts(&e), vec![0, 0, 0, 960, 1920, 1920, 2880, 3840, 3840]);
+    let ev = e.end_quantize_preview(false);
+    assert!(has_song_changed(&ev));
+    assert_eq!(e.song, before);
+    assert_eq!(e.undo.undo_depth(), 0);
+    assert!(!e.quantize_previewing());
+    assert_eq!(e.quantize, settings, "the panel's settings are remembered");
+}
+
+#[test]
+fn quantize_preview_keeps_one_undo_step() {
+    let mut e = Editor::new(chords());
+    let before = e.song.clone();
+    e.execute(&Command::SelectAll, None).unwrap();
+    e.begin_quantize_preview().unwrap();
+    e.preview_quantize(QuantizeSettings { grid: Some(Grid::plain(Division::Quarter)), strength: 100, swing: 0 });
+    e.preview_quantize(QuantizeSettings { grid: Some(Grid::plain(Division::Sixteenth)), strength: 100, swing: 0 });
+    assert_eq!(starts(&e)[6], 2880, "each preview starts from the original notes");
+    e.end_quantize_preview(true);
+    assert_eq!(e.undo.undo_depth(), 1);
+    e.execute(&Command::Undo, None).unwrap();
+    assert_eq!(e.song, before);
+}
+
+#[test]
+fn quantize_preview_ignores_swing_on_triplet_grids() {
+    let mut s = Song::new_empty();
+    let n = s.new_note(Tick(330), Tick(G), 60, 100);
+    s.tracks[0].insert_note(n);
+    let mut e = Editor::new(s);
+    e.execute(&Command::SelectAll, None).unwrap();
+    e.begin_quantize_preview().unwrap();
+    e.preview_quantize(QuantizeSettings { grid: Some(Grid { base: Division::Eighth, modifier: GridModifier::Triplet }), strength: 100, swing: 100 });
+    assert_eq!(starts(&e), vec![320]);
+}
+
+#[test]
+fn the_quantize_panel_needs_notes() {
+    let mut e = Editor::new(Song::new_empty());
+    assert_eq!(e.execute(&Command::OpenQuantizePanel, None), Err(EditError::NothingSelected));
+    assert_eq!(e.begin_quantize_preview(), Err(EditError::NothingSelected));
+}
+
+#[test]
+fn spread_evenly_turns_sixteenths_into_a_triplet() {
+    let mut s = Song::new_empty();
+    for (start, pitch) in [(0, 60), (240, 62), (480, 64)] {
+        let n = s.new_note(Tick(start), Tick(G), pitch, 100);
+        s.tracks[0].insert_note(n);
+    }
+    let mut e = Editor::new(s.clone());
+    let mut k = km();
+    let ev = drive_with(&mut e, &mut k, "a e");
+    assert_eq!(starts(&e), vec![0, 320, 640]);
+    assert_eq!(durations(&e), vec![320, 320, 320]);
+    assert_eq!(last_status(&ev), "spread 3 times evenly over 1 beat");
+    assert_eq!(e.undo.undo_depth(), 1);
+    let ev = drive_with(&mut e, &mut k, "e");
+    assert_eq!(last_status(&ev), "already evenly spread");
+    // a count sets the span in beats
+    let mut e = Editor::new(s);
+    drive_with(&mut e, &mut k, "a 2 e");
+    assert_eq!(starts(&e), vec![0, 640, 1280]);
+    // one note has nothing to spread against
+    let mut e = Editor::new(Song::new_empty());
+    e.execute(&Command::InsertNote, None).unwrap();
+    assert!(matches!(e.execute(&Command::SpreadEvenly, None), Err(EditError::NoMatch(_))));
+}
+
+#[test]
+fn triplet_grid_steps_restart_at_each_bar() {
+    let mut s = Song::new_empty();
+    s.meter_map = MeterMap::constant(3, 4);
+    let mut e = Editor::new(s);
+    let mut k = km();
+    e.grid = Grid::plain(Division::Quarter);
+    drive_with(&mut e, &mut k, "Ctrl+g");
+    assert_eq!(e.grid.to_string(), "1/4T");
+    // a 3/4 bar holds four and a half quarter-note triplets: the fifth step is the bar line
+    drive_with(&mut e, &mut k, "Right Right Right Right Right");
+    assert_eq!(e.cursor.tick, Tick(2880));
+    drive_with(&mut e, &mut k, "Right");
+    assert_eq!(e.cursor.tick, Tick(2880 + 640));
+    drive_with(&mut e, &mut k, "Left Left");
+    assert_eq!(e.cursor.tick, Tick(2560));
+    e.cursor_to_grid_line_at(Tick(3000));
+    assert_eq!(e.cursor.tick, Tick(2880));
 }
 
 #[test]

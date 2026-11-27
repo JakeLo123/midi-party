@@ -119,12 +119,14 @@
 "Shift+-"     = { cmd = "nudge_velocity", delta = -20 }
 "Shift+="     = { cmd = "nudge_velocity", delta = 20 }
 "h"           = { cmd = "humanize", velocity = 8, timing = 10 }
-"q"           = "quantize"
+"q"           = "open_quantize_panel"
 "Shift+q"     = "quantize_length"
+"e"           = "spread_evenly"
 
 # --- view
 "g"           = { cmd = "cycle_grid", dir = "next" }
 "Shift+g"     = { cmd = "cycle_grid", dir = "prev" }
+"Ctrl+g"      = "toggle_triplet"
 "t"           = "next_track"
 "Shift+t"     = "prev_track"
 "Cmd+="       = "zoom_in"

@@ -57,6 +57,8 @@ const EDIT_ITEMS: &[(&str, &str)] = &[
     ("paste", "Paste"),
     ("delete_selected", "Delete"),
     ("select_all", "Select All"),
+    ("open_quantize_panel", "Quantize…"),
+    ("spread_evenly", "Spread Evenly"),
 ];
 const VIEW_ITEMS: &[(&str, &str)] = &[("zoom_in", "Zoom In"), ("zoom_out", "Zoom Out"), ("zoom_to_fit", "Zoom to Fit")];
 const PIANO_ROLL: (&str, &str) = ("toggle_piano_roll", "Show Piano Roll");
@@ -150,7 +152,20 @@ impl MacMenu {
         let edit_menu = Submenu::with_items(
             "Edit\u{200B}",
             true,
-            &[&edit[0], &edit[1], &separator(), &edit[2], &edit[3], &edit[4], &edit[5], &separator(), &edit[6]],
+            &[
+                &edit[0],
+                &edit[1],
+                &separator(),
+                &edit[2],
+                &edit[3],
+                &edit[4],
+                &edit[5],
+                &separator(),
+                &edit[6],
+                &separator(),
+                &edit[7],
+                &edit[8],
+            ],
         )
         .expect("edit menu builds");
 

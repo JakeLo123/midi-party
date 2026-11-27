@@ -67,6 +67,8 @@ const SPECS: &[Spec] = &[
     Spec { name: "humanize", args: "[velocity] [timing ticks]", aliases: &["h"] },
     Spec { name: "quantize", args: "[grid] [strength%] [swing%]", aliases: &["q"] },
     Spec { name: "quantize_length", args: "", aliases: &["ql"] },
+    Spec { name: "open_quantize_panel", args: "", aliases: &[] },
+    Spec { name: "spread_evenly", args: "", aliases: &["spread", "tuplet"] },
     Spec { name: "set_swing", args: "<percent>", aliases: &["swing"] },
     Spec { name: "transpose_selected", args: "<semitones>", aliases: &["t", "tr", "transpose"] },
     Spec { name: "undo", args: "", aliases: &["u"] },
@@ -103,6 +105,7 @@ const SPECS: &[Spec] = &[
     Spec { name: "duplicate", args: "", aliases: &["dup"] },
     Spec { name: "set_grid", args: "<grid e.g. 1/16, 1/8T, 1/4.>", aliases: &["grid"] },
     Spec { name: "cycle_grid", args: "<next|prev>", aliases: &[] },
+    Spec { name: "toggle_triplet", args: "", aliases: &["triplet"] },
     Spec { name: "next_track", args: "", aliases: &[] },
     Spec { name: "prev_track", args: "", aliases: &[] },
     Spec { name: "zoom_in", args: "", aliases: &[] },
@@ -480,8 +483,15 @@ pub fn parse(line: &str) -> Result<Command, CmdLineError> {
                 _ => (None, 0),
             };
             a.at_most(at + 2)?;
-            Command::Quantize { grid, strength: a.percent(at, "strength", 100)?, swing: a.percent(at + 1, "swing", 0)? }
+            let swing = match a.optional(at + 1) {
+                Some(_) => Some(a.percent(at + 1, "swing", 0)?),
+                None => None,
+            };
+            Command::Quantize { grid, strength: a.percent(at, "strength", 100)?, swing }
         }
+        "open_quantize_panel" => Command::OpenQuantizePanel,
+        "spread_evenly" => Command::SpreadEvenly,
+        "toggle_triplet" => Command::ToggleTriplet,
         "quantize_length" => Command::QuantizeLength,
         "set_swing" => {
             a.at_most(1)?;
@@ -685,7 +695,7 @@ pub fn to_line(cmd: &Command) -> String {
         Command::Quantize { grid, strength, swing } => {
             let mut v: Vec<String> = grid.iter().map(ToString::to_string).collect();
             v.push(format!("{strength}%"));
-            v.push(format!("{swing}%"));
+            v.extend(swing.map(|swing| format!("{swing}%")));
             v
         }
         Command::SetSwing { percent } => vec![format!("{percent}%")],
@@ -756,6 +766,9 @@ pub fn to_line(cmd: &Command) -> String {
         | Command::ZoomToFit
         | Command::ToggleCheatSheet
         | Command::OpenInstrumentPicker
+        | Command::OpenQuantizePanel
+        | Command::SpreadEvenly
+        | Command::ToggleTriplet
         | Command::EditTrackName
         | Command::AddTrack
         | Command::RemoveTrack
@@ -835,7 +848,7 @@ mod tests {
             Command::NudgeSelected { ticks: -10 },
             Command::ChangeLength { delta_steps: -2 },
             Command::NudgeLength { ticks: -10 },
-            Command::Quantize { grid: Some(Grid { base: Division::Eighth, modifier: GridModifier::Triplet }), strength: 50, swing: 66 },
+            Command::Quantize { grid: Some(Grid { base: Division::Eighth, modifier: GridModifier::Triplet }), strength: 50, swing: Some(66) },
             Command::ExtendSelection { dir: Dir::Up, unit: Unit::Semitone },
             Command::CycleGrid { dir: CycleDir::Prev },
             Command::SetSwing { percent: 55 },
@@ -864,18 +877,18 @@ mod tests {
 
     #[test]
     fn parses_aliases_and_argument_types() {
-        assert_eq!(parse("q"), Ok(Command::Quantize { grid: None, strength: 100, swing: 0 }));
+        assert_eq!(parse("q"), Ok(Command::Quantize { grid: None, strength: 100, swing: None }));
         assert_eq!(
             parse(":quantize 1/8T 50% 20"),
             Ok(Command::Quantize {
                 grid: Some(Grid { base: Division::Eighth, modifier: GridModifier::Triplet }),
                 strength: 50,
-                swing: 20
+                swing: Some(20)
             })
         );
-        assert_eq!(parse("  Q 1/16  "), Ok(Command::Quantize { grid: Some(Grid::default()), strength: 100, swing: 0 }));
-        assert_eq!(parse("q 50%"), Ok(Command::Quantize { grid: None, strength: 50, swing: 0 }));
-        assert_eq!(parse("q 100 66"), Ok(Command::Quantize { grid: None, strength: 100, swing: 66 }));
+        assert_eq!(parse("  Q 1/16  "), Ok(Command::Quantize { grid: Some(Grid::default()), strength: 100, swing: None }));
+        assert_eq!(parse("q 50%"), Ok(Command::Quantize { grid: None, strength: 50, swing: None }));
+        assert_eq!(parse("q 100 66"), Ok(Command::Quantize { grid: None, strength: 100, swing: Some(66) }));
         assert_eq!(parse("vel 80"), Ok(Command::SetVelocity { value: 80 }));
         assert_eq!(parse("vel 80..110"), Ok(Command::RampVelocity { from: 80, to: 110 }));
         assert_eq!(parse("ramp 110..40"), Ok(Command::RampVelocity { from: 110, to: 40 }));

@@ -435,8 +435,7 @@ impl TracksArea {
             self.left_tick = 0.0;
         }
 
-        let grid = editor.grid_ticks().get().max(1);
-        let snap = |tick: f64| (tick as u64 / grid) * grid;
+        let snap = |tick: f64| editor.grid_floor(Tick(tick.max(0.0) as u64)).get();
 
         if let Some(pos) = ui.input(|i| i.pointer.hover_pos()) {
             if rect.contains(pos) && pos.x >= lanes_x.min {
